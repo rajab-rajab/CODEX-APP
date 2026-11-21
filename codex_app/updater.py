@@ -1,27 +1,37 @@
-"""Keeping Codex App up to date.
+"""Keeping Codex App and the Codex engine up to date.
 
-The app folder is a git clone of the app's GitHub repository. Updating means downloading the new
-commits from GitHub (git fetch) and moving to them (git pull --fast-forward-only). If requirements.txt
-changed, the packages are installed again.
+Two things update:
+
+1. The app itself. The app folder is a git clone of the app's GitHub repository. Updating means
+   downloading the new commits from GitHub (git fetch) and moving to them (git pull --ff-only).
+   If requirements.txt changed, the packages are installed again.
+2. The Codex engine: OpenAI's `openai-codex` package from PyPI, which brings the Codex program.
+   requirements.txt says which engine versions this app accepts; the newest accepted one is
+   installed, checked, and rolled back if it doesn't start.
 
 Your settings (environment variables) and saved conversations (~/.codex-app) are outside the app
-folder, so an update never touches them. An update is refused while you have uncommitted changes to
-the app's own files, so nothing you edited is overwritten."""
+folder, so an update never touches them. An app update is refused while you have uncommitted changes
+to the app's own files, so nothing you edited is overwritten."""
 
+import importlib.metadata
 import json
 import re
 import subprocess
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from . import __version__
 
 APP_DIR = Path(__file__).resolve().parents[1]
 CHECK_EVERY = 24 * 3600  # seconds between automatic checks
 _VERSION = re.compile(r'__version__\s*=\s*["\']([^"\']+)["\']')
+
+ENGINE_PACKAGE = "openai-codex"
+PYPI_URL = f"https://pypi.org/pypi/{ENGINE_PACKAGE}/json"
 
 
 @dataclass
@@ -129,7 +139,124 @@ def apply(app_dir: Path = APP_DIR, install_packages: bool = True) -> tuple[bool,
     return True, "\n".join(lines)
 
 
-def due_notice(app_dir: Path, home: Path, now: Optional[float] = None) -> Optional[str]:
+# --- the Codex engine (openai-codex on PyPI) ------------------------------------------------------
+
+@dataclass
+class EngineStatus:
+    ok: bool               # False if the check itself could not be done
+    message: str = ""
+    current: str = ""      # installed version ("" if not installed)
+    latest: str = ""       # newest version this app accepts
+    newest: str = ""       # newest version on PyPI, accepted or not
+
+    @property
+    def available(self) -> bool:
+        return self.ok and bool(self.latest) and self.latest != self.current
+
+
+def engine_requirement(app_dir: Path = APP_DIR) -> str:
+    """The openai-codex line of requirements.txt, for example 'openai-codex>=0.171,<1'."""
+    try:
+        for line in (app_dir / "requirements.txt").read_text(encoding="utf-8").splitlines():
+            line = line.split("#")[0].strip()
+            if re.match(rf"{re.escape(ENGINE_PACKAGE)}\b", line, re.IGNORECASE):
+                return line
+    except OSError:
+        pass
+    return ENGINE_PACKAGE
+
+
+def engine_version() -> str:
+    try:
+        return importlib.metadata.version(ENGINE_PACKAGE)
+    except importlib.metadata.PackageNotFoundError:
+        return ""
+
+
+def _pypi_releases(timeout: int = 10) -> dict:
+    request = urllib.request.Request(PYPI_URL, headers={"User-Agent": "codex-app-updater"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8")).get("releases", {})
+
+
+def engine_check(app_dir: Path = APP_DIR, releases: Optional[Callable[[], dict]] = None,
+                 current: Optional[str] = None) -> EngineStatus:
+    """Ask PyPI for the newest Codex engine this app accepts. Never changes anything."""
+    from packaging.requirements import Requirement
+    from packaging.version import InvalidVersion, Version
+
+    current = engine_version() if current is None else current
+    spec = Requirement(engine_requirement(app_dir)).specifier
+    try:
+        found = (releases or _pypi_releases)()
+    except Exception as e:
+        return EngineStatus(False, f"Could not reach PyPI to check the Codex engine: {e}", current)
+
+    usable = []
+    for text, files in found.items():
+        try:
+            version = Version(text)
+        except InvalidVersion:
+            continue
+        if version.is_prerelease or not files or all(f.get("yanked") for f in files):
+            continue
+        usable.append(version)
+    if not usable:
+        return EngineStatus(False, "PyPI listed no usable Codex engine versions.", current)
+
+    newest = max(usable)
+    accepted = [v for v in usable if spec.contains(v)]
+    latest = str(max(accepted)) if accepted else ""
+    newer = bool(latest) and (not current or Version(latest) > Version(current))
+    if newer:
+        message = f"Codex engine update available: {current or 'not installed'} -> {latest}."
+    else:
+        message = f"Codex engine {current} is up to date."
+        if newest not in accepted and (not current or newest > Version(current)):
+            message += f" (Version {newest} exists, but this app version accepts only '{spec}'.)"
+    return EngineStatus(True, message, current, latest if newer else current, str(newest))
+
+
+def _engine_starts() -> bool:
+    """Start the installed Codex engine once in a separate process, to check it works."""
+    probe = "import openai_codex as s\nwith s.Codex() as c:\n    c.metadata\n"
+    try:
+        return subprocess.run([sys.executable, "-c", probe], capture_output=True, timeout=120).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def engine_apply(app_dir: Path = APP_DIR, status: Optional[EngineStatus] = None,
+                 run: Callable = subprocess.run, starts: Callable[[], bool] = _engine_starts) -> tuple[bool, str]:
+    """Install the newest accepted Codex engine. Goes back to the old one if the new one doesn't start.
+    Run this while Codex is NOT running (the app does it in --update, before starting Codex)."""
+    status = status or engine_check(app_dir)
+    if not status.ok or not status.available:
+        return False, status.message
+    pip = [sys.executable, "-m", "pip", "install", "-q"]
+    done = run(pip + [f"{ENGINE_PACKAGE}=={status.latest}"], capture_output=True, text=True)
+    if done.returncode != 0:
+        return False, ("The Codex engine could not be updated: "
+                       + ((done.stderr or "").strip().splitlines() or ["pip failed"])[-1])
+    if starts():
+        return True, f"Updated the Codex engine {status.current} -> {status.latest}."
+    if status.current:
+        run(pip + [f"{ENGINE_PACKAGE}=={status.current}"], capture_output=True, text=True)
+        return False, (f"Codex engine {status.latest} did not start, so version {status.current} was "
+                       "put back. Nothing changed.")
+    return False, f"Codex engine {status.latest} was installed but did not start."
+
+
+def update_everything(app_dir: Path = APP_DIR) -> tuple[bool, str]:
+    """What `py main.py --update` does: the app first, then the engine. Returns (anything updated, message)."""
+    app_updated, app_message = apply(app_dir)
+    # After an app update, requirements.txt may accept a newer engine, so the engine is checked afterwards.
+    engine_updated, engine_message = engine_apply(app_dir)
+    return app_updated or engine_updated, f"{app_message}\n{engine_message}"
+
+
+def due_notice(app_dir: Path, home: Path, now: Optional[float] = None,
+               engine: Callable[[], EngineStatus] = None) -> Optional[str]:
     """A short 'update available' line, checked at most once a day. Never raises, never blocks for long."""
     now = time.time() if now is None else now
     stamp = home / "update-check.json"
@@ -139,10 +266,22 @@ def due_notice(app_dir: Path, home: Path, now: Optional[float] = None) -> Option
         last = 0
     if now - last < CHECK_EVERY:
         return None
+    lines = []
     try:
         status = check(app_dir, timeout=8)
+        if status.available:
+            lines.append(f"{status.message} Type /update to install it.")
+    except Exception:
+        pass
+    try:
+        engine_status = (engine or (lambda: engine_check(app_dir, releases=lambda: _pypi_releases(timeout=8))))()
+        if engine_status.available:
+            lines.append(f"{engine_status.message} Type /exit, then run: py main.py --update")
+    except Exception:
+        pass
+    try:
         home.mkdir(parents=True, exist_ok=True)
         stamp.write_text(json.dumps({"checked": now}), encoding="utf-8")
-    except Exception:
-        return None
-    return f"{status.message} Type /update to install it." if status.available else None
+    except OSError:
+        pass
+    return "\n".join(lines) or None

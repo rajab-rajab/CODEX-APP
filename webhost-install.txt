@@ -46,13 +46,13 @@ You need: Python 3.10 or newer (start it with "py", the Windows Python launcher)
    codex-app.cmd in the folder does the same. Add the folder to your PATH to type
    codex-app --mode dual from anywhere.
 
-5. Update it later:
+5. Update it later (with the app closed):
 
        py main.py --update
 
-   The Codex engine itself updates with:
-
-       py -m pip install -U openai-codex
+   This updates the app from GitHub AND the Codex engine from PyPI. The engine is checked
+   after installing, and the old one is put back if the new one doesn't start.
+   To only see what's new:  py main.py --version
 
 
 ==================================================================
@@ -162,14 +162,18 @@ Notes:
 STEP 7: UPDATE IT LATER
 -----------------------
 
+Run this while the app is closed:
+
     cd ~/codex-app && .venv/bin/python main.py --update
 
-If requirements.txt changed, the packages
-(and the Codex engine) are updated too. Then start the app again (step 6).
+This updates the app from GitHub and the Codex engine from PyPI. A new engine is started once to
+check it works, and the old one is put back if it doesn't. Then start the app again (step 6).
 
-To update only the Codex engine:
+To only see what's new, without changing anything:
 
-    ~/codex-app/.venv/bin/pip install -U openai-codex
+    cd ~/codex-app && .venv/bin/python main.py --version
+
+The app also checks once a day when it starts, and tells you when an update is waiting.
 
 
 IF THE SANDBOX DOES NOT WORK

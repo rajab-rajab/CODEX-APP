@@ -1,2 +1,5 @@
-openai-codex>=0.171
+# The Codex engine. The range says which engine versions this app version is known to work with;
+# `py main.py --update` installs the newest version inside it. Widen it after testing a new engine.
+openai-codex>=0.171,<0.200
+packaging
 pytest

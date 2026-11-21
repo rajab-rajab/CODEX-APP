@@ -28,8 +28,8 @@ HELP = """Commands:
   /resume [number]        go back to a saved conversation (default: the most recent)
   /clear                  start a new conversation
   /login                  sign in to Codex with your ChatGPT account
-  /update                 install the newest version of Codex App from GitHub
-  /version                show this version and check for a newer one
+  /update                 install the newest Codex App from GitHub (and say if the engine has one)
+  /version                show the app and Codex engine versions, and check for newer ones
   /exit                   quit
 Ctrl+C stops the current task."""
 
@@ -72,6 +72,12 @@ def print_usage(mode) -> None:
         cost_text = f", about ${cost:.4f}" if cost is not None else ""
         print(f"  {label}: {u.input:,} in ({u.cached:,} cached), {u.output:,} out "
               f"({u.reasoning:,} reasoning){cost_text}")
+
+
+def print_versions() -> None:
+    print(f"Codex App {__version__}, Codex engine {updater.engine_version() or 'not installed'}")
+    print(updater.check().message)
+    print(updater.engine_check().message)
 
 
 def sign_in(codex) -> bool:
@@ -190,11 +196,16 @@ class App:
         elif name == "/login":
             self.login()
         elif name == "/version":
-            print(f"Codex App {__version__}")
-            print(updater.check().message)
+            print_versions()
         elif name == "/update":
             updated, message = updater.apply()
             print(message)
+            engine = updater.engine_check()
+            if engine.available:
+                # The engine is running inside this app right now, so it can't be replaced from here.
+                print(f"{engine.message}\n{YELLOW}To install it: type /exit, then run  py main.py --update{RESET}")
+            else:
+                print(engine.message)
             if updated:
                 print(f"{YELLOW}Type /exit, then start the app again. Your conversation is saved: "
                       f"use --continue to carry on.{RESET}")
@@ -267,13 +278,14 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if args.version:
-        print(f"Codex App {__version__}")
-        print(updater.check().message)
+        print_versions()
         return 0
     if args.update:
-        updated, message = updater.apply()
+        # Runs before Codex starts, so the engine can be replaced safely.
+        updated, message = updater.update_everything()
         print(message)
-        return 0 if updated or "up to date" in message else 1
+        failed = any(word in message for word in ("failed", "could not", "did not start", "Not updated"))
+        return 1 if failed and not updated else 0
 
     try:
         import openai_codex as sdk

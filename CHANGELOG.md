@@ -2,6 +2,15 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## 1.1.0 (2026-11-21)
+
+- The Codex engine updates too: `py main.py --update` installs the newest `openai-codex` that this
+  app version accepts (the range in requirements.txt), checks it starts, and puts the old one back
+  if it doesn't.
+- The daily check, `/version` and `--version` cover both the app and the engine. `/update` inside
+  the app says when a new engine is waiting.
+- requirements.txt: `openai-codex>=0.171,<0.200` and `packaging`.
+
 ## 1.0.1 (2026-11-21)
 
 - `webhost-install.txt`: installing Codex App on a Windows PC and on Mountain Web Hosting.

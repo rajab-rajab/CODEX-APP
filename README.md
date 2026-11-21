@@ -142,16 +142,43 @@ models' prices to `PRICES` in `codex_app/config.py`. Set a monthly spend limit i
 
 ## Updates
 
-Like Claude App, it checks GitHub once a day and updates with `/update` or `py main.py --update`.
-It never updates over uncommitted changes to its own files.
+Two things update:
 
-To publish a new version:
+- **Codex App** itself, from GitHub.
+- **The Codex engine**, OpenAI's `openai-codex` package from PyPI. It brings the Codex program and
+  gets new versions often.
+
+Once a day, at start, the app checks both and tells you if something new is waiting.
+
+**To update everything, run:**
+
+```bash
+py main.py --update
+```
+
+It updates the app first, then installs the newest Codex engine this app version accepts. Run it
+while the app is closed: the engine can't be replaced while Codex is running.
+
+`/update` inside the app updates the app and says whether a new engine is waiting.
+`/version` (or `py main.py --version`) shows both versions and checks for newer ones.
+
+**How engine updates are kept safe:**
+
+- `requirements.txt` sets the engine versions this app version works with (`openai-codex>=0.171,<0.200`).
+  A future engine that changes its programming interface isn't installed until you widen the range
+  after testing it. `--version` tells you when a newer engine exists outside the range.
+- After installing a new engine, the app starts it once to check it works. If it doesn't, the
+  previous version is put back.
+- An app update is refused while you have uncommitted changes to the app's own files.
+- Your settings, saved conversations and Codex sign-in are never touched.
+
+**To publish a new app version:**
 
 1. Raise `__version__` in `codex_app/__init__.py`.
 2. Add a `CHANGELOG.md` entry.
 3. Commit and push.
 
-The Codex engine itself updates with `py -m pip install -U openai-codex`.
+To allow a newer engine, test it, then widen the range in `requirements.txt` in that same release.
 
 ## Files
 
@@ -162,7 +189,7 @@ The Codex engine itself updates with `py -m pip install -U openai-codex`.
 | `codex_app/agent.py` | One Codex thread: start, resume, stream and show its work |
 | `codex_app/config.py` | Settings, permissions, prices |
 | `codex_app/sessions.py` | Saving and resuming conversations |
-| `codex_app/updater.py` | Updating Codex App from GitHub |
+| `codex_app/updater.py` | Updating Codex App from GitHub and the Codex engine from PyPI |
 | `tests/` | Tests with a fake Codex (no key, nothing billed) |
 
 ## Tests

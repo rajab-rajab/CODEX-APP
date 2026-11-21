@@ -99,11 +99,94 @@ def test_not_a_git_clone(tmp_path):
     assert not status.ok and "isn't a git clone" in status.message
 
 
+NO_ENGINE_UPDATE = lambda: updater.EngineStatus(True, "Codex engine 0.171.0 is up to date.", "0.171.0", "0.171.0")  # noqa: E731
+
+
 def test_daily_notice(repos, tmp_path):
     dev, installed = repos
     home = tmp_path / "home"
     publish(dev, "1.2.0", "Faster search")
-    notice = updater.due_notice(installed, home, now=1_000_000)
+    notice = updater.due_notice(installed, home, now=1_000_000, engine=NO_ENGINE_UPDATE)
     assert notice and "1.0.0 -> 1.2.0" in notice and "/update" in notice
-    assert updater.due_notice(installed, home, now=1_000_000 + 3600) is None  # already checked today
-    assert updater.due_notice(installed, home, now=1_000_000 + 25 * 3600) is not None
+    assert updater.due_notice(installed, home, now=1_000_000 + 3600, engine=NO_ENGINE_UPDATE) is None  # checked today
+    assert updater.due_notice(installed, home, now=1_000_000 + 25 * 3600, engine=NO_ENGINE_UPDATE) is not None
+
+
+# --- the Codex engine --------------------------------------------------------------------------------
+
+def releases(*versions, yanked=()):
+    """Fake PyPI 'releases' data: each version has one file; some can be yanked."""
+    return lambda: {v: [{"filename": f"x-{v}.whl", "yanked": v in yanked}] for v in versions}
+
+
+@pytest.fixture
+def app_with_range(tmp_path):
+    (tmp_path / "requirements.txt").write_text("# engine\nopenai-codex>=0.171,<0.200  # range\npytest\n",
+                                               encoding="utf-8")
+    return tmp_path
+
+
+def test_engine_requirement_is_read_from_requirements(app_with_range):
+    assert updater.engine_requirement(app_with_range) == "openai-codex>=0.171,<0.200"
+
+
+def test_engine_newest_accepted_version(app_with_range):
+    status = updater.engine_check(app_with_range, releases("0.170.0", "0.171.0", "0.180.2", "0.181.0rc1",
+                                                           "0.185.0", "0.200.0"), current="0.171.0")
+    assert status.available and status.latest == "0.185.0"  # newest inside the range; pre-releases and 0.200 are skipped
+    assert status.newest == "0.200.0" and "0.171.0 -> 0.185.0" in status.message
+
+
+def test_engine_yanked_versions_are_skipped(app_with_range):
+    status = updater.engine_check(app_with_range, releases("0.171.0", "0.172.0", yanked=("0.172.0",)),
+                                  current="0.171.0")
+    assert not status.available and "up to date" in status.message
+
+
+def test_engine_outside_range_is_mentioned_not_installed(app_with_range):
+    status = updater.engine_check(app_with_range, releases("0.171.0", "0.200.0"), current="0.171.0")
+    assert not status.available and "0.200.0 exists" in status.message
+
+
+def test_engine_pypi_unreachable(app_with_range):
+    def down():
+        raise OSError("no network")
+    status = updater.engine_check(app_with_range, down, current="0.171.0")
+    assert not status.ok and "no network" in status.message
+
+
+class FakePip:
+    def __init__(self, fail=False):
+        self.calls, self.fail = [], fail
+
+    def __call__(self, cmd, **kw):
+        self.calls.append(cmd[-1])
+        return type("Done", (), {"returncode": 1 if self.fail else 0, "stderr": "boom"})()
+
+
+def test_engine_apply_installs_and_checks(app_with_range):
+    pip = FakePip()
+    status = updater.EngineStatus(True, "x", "0.171.0", "0.185.0")
+    ok, message = updater.engine_apply(app_with_range, status, run=pip, starts=lambda: True)
+    assert ok and pip.calls == ["openai-codex==0.185.0"] and "0.171.0 -> 0.185.0" in message
+
+
+def test_engine_apply_rolls_back_if_new_engine_does_not_start(app_with_range):
+    pip = FakePip()
+    status = updater.EngineStatus(True, "x", "0.171.0", "0.185.0")
+    ok, message = updater.engine_apply(app_with_range, status, run=pip, starts=lambda: False)
+    assert not ok and pip.calls == ["openai-codex==0.185.0", "openai-codex==0.171.0"]
+    assert "put back" in message
+
+
+def test_engine_apply_reports_pip_failure(app_with_range):
+    status = updater.EngineStatus(True, "x", "0.171.0", "0.185.0")
+    ok, message = updater.engine_apply(app_with_range, status, run=FakePip(fail=True), starts=lambda: True)
+    assert not ok and "could not be updated" in message
+
+
+def test_daily_notice_mentions_engine(tmp_path):
+    engine = lambda: updater.EngineStatus(True, "Codex engine update available: 0.171.0 -> 0.185.0.",  # noqa: E731
+                                          "0.171.0", "0.185.0")
+    notice = updater.due_notice(tmp_path, tmp_path / "home", now=1_000_000, engine=engine)
+    assert "0.171.0 -> 0.185.0" in notice and "py main.py --update" in notice
