@@ -2,6 +2,10 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## 1.0.1 (2026-11-21)
+
+- `webhost-install.txt`: installing Codex App on a Windows PC and on Mountain Web Hosting.
+
 ## 1.0.0 (2026-11-21)
 
 - Built on OpenAI's Codex Python SDK (`openai-codex`, from github.com/openai/codex).

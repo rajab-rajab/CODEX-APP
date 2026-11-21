@@ -1,0 +1,226 @@
+INSTALLING CODEX APP
+====================
+
+Part 1: on a Windows PC
+Part 2: on Mountain Web Hosting (Web SSH)
+
+Codex App is OpenAI's Codex (github.com/openai/codex) with two modes:
+  A) single model mode   (gpt-6.2-sol)
+  B) dual model mode     (gpt-6.2-astra planner, gpt-6.2-sol worker)
+It is a program you use in a terminal. It is NOT a website.
+
+
+==================================================================
+PART 1: INSTALL ON A WINDOWS PC
+==================================================================
+
+You need: Python 3.10 or newer (use "py", not "python": on this PC "python" opens MySQL
+Workbench's copy), git, and a sign-in to GitHub (the repository is private).
+
+1. Download the app:
+
+       git clone https://github.com/rajab-rajab/CODEX-APP.git
+       cd CODEX-APP
+
+2. Install it. This also downloads the Codex engine, so it takes a few minutes:
+
+       py -m pip install -r requirements.txt
+
+3. Sign in, in one of two ways:
+
+   a) OpenAI API key (you pay per token). Run this once, then open a NEW terminal:
+
+          setx OPENAI_API_KEY "your-key-here"
+
+      The first time the app starts, it signs Codex in with this key. Codex keeps it in its own
+      sign-in file (~/.codex).
+
+   b) ChatGPT account (uses your ChatGPT plan): start the app, type /login, open the link it
+      shows and enter the code.
+
+4. Run it on a project:
+
+       py main.py --project "C:\path\to\project"                  (A: single model mode)
+       py main.py --project "C:\path\to\project" --mode dual      (B: planner + worker)
+       py main.py --project "C:\path\to\project" --continue       (carry on last conversation)
+
+   codex-app.cmd in the folder does the same. Add the folder to your PATH to type
+   codex-app --mode dual from anywhere.
+
+5. Update it later:
+
+       py main.py --update
+
+   The Codex engine itself updates with:
+
+       py -m pip install -U openai-codex
+
+
+==================================================================
+PART 2: INSTALL ON MOUNTAIN WEB HOSTING
+==================================================================
+
+BEFORE YOU START: READ THIS
+---------------------------
+
+- Install it in your home folder (~/codex-app). Never install it inside ~/www, because anything
+  in ~/www can be served to visitors.
+
+- It changes your LIVE site files directly. Every change Codex makes is live at once.
+  Make a backup first:
+
+      cd ~/www && tar czf ~/site-backup-$(date +%Y%m%d).tar.gz test-ai.mypearls.com.pk
+
+- SECRET FILES ARE NOT HARD-BLOCKED IN CODEX APP. Codex is told never to read .env, keys,
+  databases or data/ folders, and in testing it followed this. But it is only an instruction:
+  Codex's sandbox controls writing, not reading. Your site's .env holds your OpenAI key and
+  SECRET_KEY, and data/ holds your users' accounts and chats. Whatever Codex reads is sent to
+  OpenAI. For your live site, Claude App (which blocks these files in code) or the PC route at
+  the end is the safer choice.
+
+- Codex's sandbox may not work on shared hosting. On Linux, Codex protects your files with
+  kernel features that a shared host may not allow. If commands fail with a "sandbox" error,
+  see "IF THE SANDBOX DOES NOT WORK" below. Do NOT switch to --permission full on the live site.
+
+
+STEP 1: CHECK THE HOST
+----------------------
+
+Open Web SSH in the panel (top bar) and run:
+
+    git --version
+    ls /usr/local/ | grep python
+    curl -sI https://api.openai.com | head -1
+    df -h ~ | tail -1
+
+You need:
+  - git
+  - Python 3.10 or newer (your site already uses /usr/local/python-3.12)
+  - a reply from the third command. Any "HTTP/..." line means the server can reach OpenAI.
+  - a few hundred MB of free space (the last command). The Codex engine is a large download.
+
+
+STEP 2: MAKE A READ-ONLY GITHUB TOKEN
+-------------------------------------
+
+On github.com:
+  Settings -> Developer settings -> Personal access tokens -> Fine-grained tokens
+  -> Generate new token
+    - Repository access: Only select repositories -> CODEX-APP
+    - Permissions: Contents -> Read-only
+    - Copy the token and keep it private.
+
+
+STEP 3: DOWNLOAD THE APP
+------------------------
+
+    cd ~ && git clone https://github.com/rajab-rajab/CODEX-APP.git codex-app
+
+When asked:
+  Username: rajab-rajab
+  Password: paste the token from step 2
+
+Type the token only at the prompt. Never put it in the URL or in a file inside the app.
+
+
+STEP 4: INSTALL IT
+------------------
+
+    cd ~/codex-app
+    /usr/local/python-3.12/bin/python3 -m venv .venv
+    .venv/bin/pip install -r requirements.txt
+
+This downloads the Linux Codex engine and can take several minutes.
+
+
+STEP 5: ADD YOUR OPENAI API KEY
+-------------------------------
+
+Keep the key in a private file in your home folder, not inside the app folder:
+
+    echo 'export OPENAI_API_KEY="your-key-here"' > ~/.codex-app-key
+    chmod 600 ~/.codex-app-key
+
+Replace your-key-here with your real key. chmod 600 means only your account can read the file.
+The first start signs Codex in with it, and Codex keeps it in ~/.codex (also private to you).
+
+Use a separate OpenAI key for Codex, not the one in your site's .env. You can then set its own
+spend limit, and turn it off without touching the site.
+
+
+STEP 6: RUN IT ON YOUR SITE
+---------------------------
+
+Start in "plan" (read only) to check that everything works:
+
+    source ~/.codex-app-key
+    ~/codex-app/.venv/bin/python ~/codex-app/main.py --project ~/www/test-ai.mypearls.com.pk --permission plan
+
+Then, for real changes, use the normal "workspace" permission (changes only inside the site folder):
+
+    ~/codex-app/.venv/bin/python ~/codex-app/main.py --project ~/www/test-ai.mypearls.com.pk
+
+For the planner + worker mode, add:  --mode dual
+To carry on with the last conversation, add:  --continue
+
+Notes:
+  - codex-app.cmd is for Windows only. On the host, always start it with the
+    .venv/bin/python main.py line above.
+  - Codex App has no "ask before each change" mode. Look first with --permission plan, then do
+    the work with the default "workspace".
+  - Type /help inside the app for all commands, and /exit to quit.
+
+
+STEP 7: UPDATE IT LATER
+-----------------------
+
+    cd ~/codex-app && .venv/bin/python main.py --update
+
+It asks for the GitHub username and token again. If requirements.txt changed, the packages
+(and the Codex engine) are updated too. Then start the app again (step 6).
+
+To update only the Codex engine:
+
+    ~/codex-app/.venv/bin/pip install -U openai-codex
+
+
+IF THE SANDBOX DOES NOT WORK
+----------------------------
+
+If every command fails with an error about the sandbox (for example "Landlock", "seccomp" or
+"bwrap"), the host doesn't allow Codex's sandbox. Then:
+  - Don't use --permission full on your live site. That would let Codex change anything your
+    hosting account can, with no limits.
+  - Use the PC route below instead.
+
+
+WHAT TO EXPECT ON SHARED HOSTING
+--------------------------------
+
+- Web SSH can disconnect during long tasks. The conversation is kept by Codex, so start again
+  with --continue.
+- The host may stop long-running programs or limit CPU and memory. Keep tasks small.
+- Codex sends a lot of context each turn (mostly cached, so cheaper). Set a monthly spend
+  limit in your OpenAI account.
+
+
+IF GIT IS NOT AVAILABLE
+-----------------------
+
+1. On github.com, open the CODEX-APP repository -> Code -> Download ZIP.
+2. In the panel, use Files to upload the ZIP to your home folder and extract it as ~/codex-app.
+3. Carry on from step 4.
+
+In this case /update and --update can't work. To update, download and upload a new ZIP.
+
+
+SAFER ALTERNATIVE (RECOMMENDED)
+-------------------------------
+
+Run Codex App on your PC (Part 1) against your local PERFECT-COMMERCIAL folder, check the
+changes, then upload the changed files to the host the way the PERFECT-COMMERCIAL README describes.
+That way your live site, your OpenAI key and your users' data stay on the server, and every
+change is checked before it goes live.
+
+Do NOT turn Codex App into a web page on your host: anyone who found that page could run
+commands on your server.
