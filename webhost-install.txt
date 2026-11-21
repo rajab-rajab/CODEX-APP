@@ -14,8 +14,7 @@ It is a program you use in a terminal. It is NOT a website.
 PART 1: INSTALL ON A WINDOWS PC
 ==================================================================
 
-You need: Python 3.10 or newer (use "py", not "python": on this PC "python" opens MySQL
-Workbench's copy), git, and a sign-in to GitHub (the repository is private).
+You need: Python 3.10 or newer (start it with "py", the Windows Python launcher) and git.
 
 1. Download the app:
 
@@ -69,7 +68,7 @@ BEFORE YOU START: READ THIS
 - It changes your LIVE site files directly. Every change Codex makes is live at once.
   Make a backup first:
 
-      cd ~/www && tar czf ~/site-backup-$(date +%Y%m%d).tar.gz test-ai.mypearls.com.pk
+      cd ~/www && tar czf ~/site-backup-$(date +%Y%m%d).tar.gz your-site.example.com
 
 - SECRET FILES ARE NOT HARD-BLOCKED IN CODEX APP. Codex is told never to read .env, keys,
   databases or data/ folders, and in testing it followed this. But it is only an instruction:
@@ -100,27 +99,16 @@ You need:
   - a few hundred MB of free space (the last command). The Codex engine is a large download.
 
 
-STEP 2: MAKE A READ-ONLY GITHUB TOKEN
--------------------------------------
+STEP 2: NO GITHUB TOKEN NEEDED
+------------------------------
 
-On github.com:
-  Settings -> Developer settings -> Personal access tokens -> Fine-grained tokens
-  -> Generate new token
-    - Repository access: Only select repositories -> CODEX-APP
-    - Permissions: Contents -> Read-only
-    - Copy the token and keep it private.
-
+The repository is public, so the host can download it without signing in to GitHub.
 
 STEP 3: DOWNLOAD THE APP
 ------------------------
 
     cd ~ && git clone https://github.com/rajab-rajab/CODEX-APP.git codex-app
 
-When asked:
-  Username: rajab-rajab
-  Password: paste the token from step 2
-
-Type the token only at the prompt. Never put it in the URL or in a file inside the app.
 
 
 STEP 4: INSTALL IT
@@ -154,11 +142,11 @@ STEP 6: RUN IT ON YOUR SITE
 Start in "plan" (read only) to check that everything works:
 
     source ~/.codex-app-key
-    ~/codex-app/.venv/bin/python ~/codex-app/main.py --project ~/www/test-ai.mypearls.com.pk --permission plan
+    ~/codex-app/.venv/bin/python ~/codex-app/main.py --project ~/www/your-site.example.com --permission plan
 
 Then, for real changes, use the normal "workspace" permission (changes only inside the site folder):
 
-    ~/codex-app/.venv/bin/python ~/codex-app/main.py --project ~/www/test-ai.mypearls.com.pk
+    ~/codex-app/.venv/bin/python ~/codex-app/main.py --project ~/www/your-site.example.com
 
 For the planner + worker mode, add:  --mode dual
 To carry on with the last conversation, add:  --continue
@@ -176,7 +164,7 @@ STEP 7: UPDATE IT LATER
 
     cd ~/codex-app && .venv/bin/python main.py --update
 
-It asks for the GitHub username and token again. If requirements.txt changed, the packages
+If requirements.txt changed, the packages
 (and the Codex engine) are updated too. Then start the app again (step 6).
 
 To update only the Codex engine:
@@ -217,8 +205,8 @@ In this case /update and --update can't work. To update, download and upload a n
 SAFER ALTERNATIVE (RECOMMENDED)
 -------------------------------
 
-Run Codex App on your PC (Part 1) against your local PERFECT-COMMERCIAL folder, check the
-changes, then upload the changed files to the host the way the PERFECT-COMMERCIAL README describes.
+Run Codex App on your PC (Part 1) against a local copy of your site, check the
+changes, then upload the changed files to the host with the panel's Files.
 That way your live site, your OpenAI key and your users' data stay on the server, and every
 change is checked before it goes live.
 

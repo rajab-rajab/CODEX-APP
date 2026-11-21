@@ -24,7 +24,8 @@ Type `/models` to see the list.
 
 ## Install
 
-Use Python 3.12 through `py`. On this PC `python` opens MySQL Workbench's copy, which has no packages.
+On Windows, start Python with `py` (the Python launcher). If `python` opens another copy, for example one
+bundled with another program, `py` still finds the right one.
 
 ```bash
 git clone https://github.com/rajab-rajab/CODEX-APP.git
@@ -169,3 +170,7 @@ The Codex engine itself updates with `py -m pip install -U openai-codex`.
 ```bash
 py -m pytest -q
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
