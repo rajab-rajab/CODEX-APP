@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.9.0 (2026-11-25)
 
 - **Built-in browser** (`--browser`, `/browser on`): Codex can visit websites and act on them when you
   ask. It is Codex App's own private browser (your installed Edge or Chrome with a fresh, empty profile,
