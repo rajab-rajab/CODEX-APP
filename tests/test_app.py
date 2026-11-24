@@ -19,6 +19,10 @@ from codex_app.modes import DualMode, SingleMode, parse_verdict  # noqa: E402
 
 # --- a fake Codex ---------------------------------------------------------------------------------
 
+import threading  # noqa: E402
+
+FAKE_LOCK = threading.Lock()
+
 def ev(method, **payload):
     return NS(method=method, payload=NS(**payload))
 
@@ -50,14 +54,18 @@ class FakeTurn:
     def interrupt(self):
         self.interrupted = True
 
+    def steer(self, message):
+        self.steered = getattr(self, "steered", []) + [message]
+
 
 class FakeThread:
     def __init__(self, codex, thread_id, options):
         self.codex, self.id, self.options = codex, thread_id, options
 
     def turn(self, text, **options):
-        self.codex.turns.append({"thread": self.id, "text": text, "options": options, "start": self.options})
-        return FakeTurn(self.codex.script[self.id].pop(0))
+        with FAKE_LOCK:
+            self.codex.turns.append({"thread": self.id, "text": text, "options": options, "start": self.options})
+            return FakeTurn(self.codex.script[self.id].pop(0))
 
     def compact(self):
         self.codex.compacted.append(self.id)
@@ -75,8 +83,9 @@ class FakeCodex:
         self.forked, self.compacted, self.names = [], [], {}
 
     def thread_start(self, **options):
-        thread_id = f"thr_{len(self.started) + 1}"
-        self.started.append(options)
+        with FAKE_LOCK:  # team mode starts threads from several workers at once
+            thread_id = f"thr_{len(self.started) + 1}"
+            self.started.append(options)
         return FakeThread(self, thread_id, options)
 
     def thread_resume(self, thread_id, **options):

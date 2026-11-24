@@ -1,22 +1,57 @@
 # Codex App
 
 OpenAI's **Codex** ([github.com/openai/codex](https://github.com/openai/codex), Apache 2.0) in your
-terminal, with two ways of working. It uses OpenAI's official Codex Python SDK (`openai-codex`),
+terminal, with three ways of working. It uses OpenAI's official Codex Python SDK (`openai-codex`),
 which installs the real Codex engine. So the reading, editing, command running and sandboxing are
-all done by Codex itself. This app adds the two modes, saved conversations and self-updates.
+all done by Codex itself. This app adds the three modes, goals, task profiles, power presets, saved
+conversations and self-updates.
 
-## Two modes
+## Three modes
 
 | Mode | Who does what | Models (default) |
 |---|---|---|
 | **A) Single model** | One Codex thread reads the code, makes the changes and checks them | `gpt-6.2-sol` |
 | **B) Dual model** | A **planner** reads the code and writes a plan. A **worker** carries it out. The planner then checks the files and runs the tests itself, and either approves or sends the work back with fixes (up to 2 times) | Planner `gpt-6.2-astra`, worker `gpt-6.2-sol` |
+| **C) Team** (`--mode team`) | Like dual, but the planner splits the task into parts that touch different files, and up to 3 **workers** (`--team-size`) do them **at the same time**. The planner then checks everything together | Planner `gpt-6.2-astra`, workers `gpt-6.2-sol` |
 
-In dual mode:
+In dual and team mode:
 
 - The planner always works in Codex's **read-only sandbox**. It can read files and run tests, but
   it can't change anything.
 - A question that needs no change is answered by the planner alone, and the worker isn't called.
+- The planner's verdict comes as **structured output** (JSON that Codex must follow), so it can't be
+  missed or misread. If an engine or model can't do that, the app falls back to a text verdict.
+- Parts that would change the same file never run at the same time in team mode.
+
+## Goals, steering, power and task profiles
+
+**Goals** (`/goal`, as in official Codex): `/goal make all the tests pass` lets Codex keep working on
+its own, over as many turns as it needs, until the goal is done or blocked. `/goal --budget 500k ...`
+stops it after about that many tokens. One-off: `py main.py --goal --budget 500k "make all the tests pass"`.
+In dual and team mode the worker works on the goal and the planner checks the result.
+
+**Steering:** while Codex works, type a message and press Enter. It is added to what Codex is doing
+right now ("use tabs, not spaces", "also update the README"). `/stop` stops it. Approval questions
+(`--approval ask`) are answered the same way.
+
+**Power** (`/power` or `--power`):
+
+| Level | Models and effort |
+|---|---|
+| `normal` | The settings you started with |
+| `high` | `gpt-6.2-astra` for every role, effort `high` (the planner `xhigh`) |
+| `max` | `gpt-6.2-astra` for every role, effort `max` (team and dual workers `xhigh`) |
+
+Higher levels give better answers on hard problems and cost more tokens.
+
+**Task profiles** (`/profile` or `--profile`, default `auto`) make each kind of message as strong and as
+cheap as it can be. `auto` picks one for each message from its wording, without an extra model call:
+
+| Profile | What happens |
+|---|---|
+| `coding` | The normal agent work: reads, edits, runs tests |
+| `chat` | A question or conversation: answered directly at `low` effort, without the planner/worker steps. Fast and cheap |
+| `maths` | A calculation or proof: at least `high` effort, worked step by step, checked (for example with a short Python calculation), ending with `Answer:` |
 
 The default models are the ones Codex recommends in its own list. `gpt-6.2-sol` is its default
 ("fast, go-to model for coding"). `gpt-6.2-astra` is "our most capable model for complex coding".
@@ -80,7 +115,11 @@ The command-line options follow official Codex where they can:
 | Option | What it does |
 |---|---|
 | `--project`, `--cd`, `-C` | The project folder Codex works in |
-| `--mode single\|dual` | A) single model or B) planner + worker |
+| `--mode single\|dual\|team` | A) single model, B) planner + worker, C) planner + workers side by side |
+| `--goal`, `--budget N` | Treat the task as a goal; stop after about N tokens (for example `500k`) |
+| `--power normal\|high\|max` | Stronger models and more reasoning for every role |
+| `--profile auto\|coding\|chat\|maths` | How messages are handled (default `auto`) |
+| `--team-size N` | Team mode: how many workers at once (default 3, at most 8) |
 | `--model`, `-m`, `--effort` | Single mode model and reasoning effort |
 | `--planner-model`, `--worker-model` | Dual mode models |
 | `--permission`, `--sandbox`, `-s` | `plan`, `workspace`, `full`, or official Codex's `read-only`, `workspace-write`, `danger-full-access` |
@@ -100,8 +139,12 @@ Most of these are the same as official Codex's.
 
 | Command | What it does |
 |---|---|
-| `/mode single`, `/mode dual` | Switch mode (starts a new conversation) |
-| `/model [name [effort]]` | Show or switch the model and reasoning effort, from the next message on. Dual mode: `/model planner <name>` or `/model worker <name>` |
+| `/mode single`, `/mode dual`, `/mode team` | Switch mode (starts a new conversation) |
+| `/goal [--budget N] <goal>` | Codex works on its own until the goal is done (see above) |
+| `/power normal\|high\|max` | Stronger models and more reasoning for every role |
+| `/profile auto\|coding\|chat\|maths` | How messages are handled |
+| `/stop` | While Codex works: stop it (typing anything else steers it) |
+| `/model [name [effort]]` | Show or switch the model and reasoning effort, from the next message on. Dual and team mode: `/model planner <name>` or `/model worker <name>` |
 | `/permission <mode>` (or `/permissions`) | What Codex may change (see below) |
 | `/approval <mode>` (or `/approvals`) | What happens when Codex wants to leave the sandbox (see below) |
 | `/status` | Models, permission, approval, account, versions, tokens and context left |
@@ -125,7 +168,8 @@ While Codex works you see what official Codex shows too: its plan as a checklist
 doing, `[ ]` to do), each command and edit, the diff of the files it changed, and after each answer the
 tokens used and how much of the model's context is left.
 
-**Ctrl+C** stops the current task. Codex is told to stop, and you can carry on with a new message.
+**Ctrl+C** (or `/stop`) stops the current task. Codex is told to stop, and you can carry on with a new
+message. Anything else you type while Codex works steers it.
 
 ## Permissions (Codex's sandbox)
 
@@ -190,6 +234,9 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_PERMISSION` | `workspace` | Starting permission |
 | `CODEX_APP_APPROVAL` | `deny_all` | Requests to leave the sandbox: `deny_all`, `auto_review`, `ask` |
 | `CODEX_APP_SEARCH` | `no` | Let Codex search the web live (same as `--search`) |
+| `CODEX_APP_PROFILE` | `auto` | Task profile: `auto`, `coding`, `chat`, `maths` |
+| `CODEX_APP_POWER` | `normal` | Power level: `normal`, `high`, `max` |
+| `CODEX_APP_TEAM_SIZE` | `3` | Team mode: workers at the same time (1 to 8) |
 | `CODEX_APP_MAX_REVIEW_ROUNDS` | `2` | How many times the planner may send work back |
 | `CODEX_APP_UPDATE_CHECK` | `yes` | Look for a new app version once a day at start |
 
@@ -249,6 +296,8 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/agent.py` | One Codex thread: start, resume, fork, compact, stream and show its work |
 | `codex_app/approvals.py` | Answering Codex's requests to leave the sandbox, and the `ask` mode |
 | `codex_app/protect.py` | Keeping Codex away from the system disk and system files |
+| `codex_app/profiles.py` | Task profiles (coding, chat, maths) and power presets |
+| `codex_app/goals.py` | Goal mode: Codex working on its own until a goal is done |
 | `codex_app/config.py` | Settings, permissions, prices |
 | `codex_app/sessions.py` | Saving and resuming conversations |
 | `codex_app/updater.py` | Updating Codex App from GitHub and the Codex engine from PyPI |

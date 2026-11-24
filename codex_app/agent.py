@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import approvals
+from . import approvals, goals
 from .config import PRICES
 
 # on_event(agent_name, kind, text). kinds: "text" (streamed answer), "thinking", "tool", "tool_result",
@@ -117,7 +117,7 @@ def format_plan(payload) -> str:
 class CodexAgent:
     def __init__(self, codex, *, name: str, model: str, effort: str, sandbox, approval_mode,
                  instructions: str, cwd: Path, on_event: Optional[EventHandler] = None,
-                 config: Optional[dict] = None, thread_cls=None):
+                 config: Optional[dict] = None, thread_cls=None, quiet: bool = False):
         self.codex = codex
         self.name = name
         self.model = model
@@ -133,7 +133,9 @@ class CodexAgent:
         self.thread_id: Optional[str] = None
         self.usage = Usage()
         self.last_diff = ""
+        self.quiet = quiet                  # show answers whole instead of streaming them (team workers)
         self._turn = None
+        self._goal = None
         self._sandbox_changed = False
         self._model_changed = False
 
@@ -196,12 +198,27 @@ class CodexAgent:
         self.effort = effort or self.effort
         self._model_changed = True    # sent with the next turn; Codex keeps it for later turns
 
+    @property
+    def busy(self) -> bool:
+        """True while a turn or a goal is running."""
+        return self._turn is not None or self._goal is not None
+
     def interrupt(self) -> None:
-        if self._turn is not None:
-            try:
-                self._turn.interrupt()
-            except Exception:
-                pass
+        for running in (self._goal, self._turn):
+            if running is not None:
+                try:
+                    running.interrupt()
+                except Exception:
+                    pass
+
+    def steer(self, message) -> bool:
+        """Add instructions to the work Codex is doing right now (official Codex's steering).
+        False if nothing is running."""
+        running = self._goal or self._turn
+        if running is None:
+            return False
+        running.steer(message)
+        return True
 
     def state(self) -> dict:
         return {"thread_id": self.thread_id, "model": self.model, "usage": self.usage.to_dict()}
@@ -213,51 +230,82 @@ class CodexAgent:
 
     # --- one message ---------------------------------------------------------------------------
 
-    def send(self, message) -> str:
-        """Give Codex a message (text, or a list of SDK input items) and stream its work until the turn
-        ends. Returns its final answer."""
-        thread = self._ensure_thread()
-        options = {"effort": self.effort}
+    def _options(self, effort: Optional[str]) -> dict:
+        options = {"effort": effort or self.effort}
         if self._sandbox_changed:
             options["sandbox"] = self.sandbox
             self._sandbox_changed = False
         if self._model_changed:
             options["model"] = self.model
             self._model_changed = False
+        return options
+
+    def send(self, message, effort: Optional[str] = None, output_schema: Optional[dict] = None,
+             quiet: Optional[bool] = None) -> str:
+        """Give Codex a message (text, or a list of SDK input items) and stream its work until the turn
+        ends. Returns its final answer.
+
+        effort: for this message only (the role's own effort otherwise).
+        output_schema: a JSON schema the final answer must follow (Codex's structured output). The answer
+            is then JSON, so it isn't streamed to the screen; the caller shows it.
+        quiet: don't stream the answer while it is written; show it whole at the end (for agents working
+            side by side, whose streams would mix)."""
+        thread = self._ensure_thread()
+        options = self._options(effort)
+        if output_schema is not None:
+            options["output_schema"] = output_schema
         self._turn = turn = thread.turn(message, **options)
-        answers, status, error, streamed = [], None, None, False
-        self.last_diff = ""
         try:
-            for event in turn.stream():
-                method = getattr(event, "method", "")
-                payload = getattr(event, "payload", None)
-                if method == "item/agentMessage/delta":
-                    delta = getattr(payload, "delta", "")
-                    if delta:
-                        streamed = True
-                        self._emit("text", delta)
-                elif method == "item/started":
-                    line = _describe_started(_root(getattr(payload, "item", None)))
-                    if line:
-                        self._emit("tool", line)
-                elif method == "item/completed":
-                    self._completed(_root(getattr(payload, "item", None)), answers, streamed)
-                elif method == "turn/plan/updated":
-                    plan = format_plan(payload)
-                    if plan:
-                        self._emit("plan", plan)
-                elif method == "turn/diff/updated":
-                    self.last_diff = getattr(payload, "diff", "") or ""
-                elif getattr(payload, "token_usage", None) is not None:  # ThreadTokenUsageUpdatedNotification
-                    usage = payload.token_usage
-                    self.usage.set_total(self.model, usage.total)
-                    self.usage.set_context(getattr(usage, "last", None), getattr(usage, "model_context_window", None))
-                elif method == "turn/completed":
-                    t = getattr(payload, "turn", None)
-                    status = _value(getattr(t, "status", None))
-                    error = getattr(t, "error", None)
+            return self._consume(turn.stream(), show_text=output_schema is None,
+                                 stream_text=not (self.quiet if quiet is None else quiet))
         finally:
             self._turn = None
+
+    def run_goal(self, objective: str, token_budget: Optional[int] = None) -> str:
+        """Official Codex's /goal: Codex keeps working, over as many turns as it needs, until the goal is
+        done, blocked, or out of budget. Returns its final answer."""
+        self._ensure_thread()
+        if self._sandbox_changed or self._model_changed:
+            self._sandbox_changed = self._model_changed = False
+            self.thread = None  # resume with the new settings, so the goal's turns use them
+            self._ensure_thread()
+        self._goal = goal = goals.start(self.codex, self.thread_id, objective, token_budget)
+        try:
+            return self._consume(iter(goal), show_text=True, stream_text=not self.quiet)
+        finally:
+            self._goal = None
+
+    def _consume(self, stream, show_text: bool, stream_text: bool) -> str:
+        answers, status, error, streamed = [], None, None, False
+        self.last_diff = ""
+        for event in stream:
+            method = getattr(event, "method", "")
+            payload = getattr(event, "payload", None)
+            if method == "item/agentMessage/delta":
+                delta = getattr(payload, "delta", "")
+                if delta and show_text and stream_text:
+                    streamed = True
+                    self._emit("text", delta)
+            elif method == "item/started":
+                line = _describe_started(_root(getattr(payload, "item", None)))
+                if line:
+                    self._emit("tool", line)
+            elif method == "item/completed":
+                self._completed(_root(getattr(payload, "item", None)), answers, streamed or not show_text)
+            elif method == "turn/plan/updated":
+                plan = format_plan(payload)
+                if plan:
+                    self._emit("plan", plan)
+            elif method == "turn/diff/updated":
+                self.last_diff = getattr(payload, "diff", "") or ""
+            elif getattr(payload, "token_usage", None) is not None:  # ThreadTokenUsageUpdatedNotification
+                usage = payload.token_usage
+                self.usage.set_total(self.model, usage.total)
+                self.usage.set_context(getattr(usage, "last", None), getattr(usage, "model_context_window", None))
+            elif method == "turn/completed":
+                t = getattr(payload, "turn", None)
+                status = _value(getattr(t, "status", None))
+                error = getattr(t, "error", None)
 
         if self.last_diff.strip():
             self._emit("diff", self.last_diff)
