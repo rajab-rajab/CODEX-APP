@@ -11,6 +11,7 @@ Type /help while it runs for the list of commands.
 import argparse
 import collections
 import copy
+import json
 import os
 import queue
 import re
@@ -20,7 +21,8 @@ import threading
 import time
 from pathlib import Path
 
-from codex_app import __version__, approvals, engine, gitflow, prefs, profiles, protect, sessions, undo, updater
+from codex_app import __version__, approvals, costs, engine, export, gitflow, prefs, profiles, protect, sessions, \
+    undo, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
 from codex_app.modes import INIT_TASK, MODES, make_reviewer, make_writer, project_instructions, review_task, \
@@ -53,6 +55,9 @@ HELP = """Commands (most are the same as official Codex's):
   /commit [message]       commit the changes; Codex writes the message unless you give one
   /pr [title]             push to a branch and open a pull request (needs GitHub's gh)
   /save [show|clear]      remember this project's mode, power, profile, permission and models
+  /export [file]          save this conversation (messages, commands, diffs) as a Markdown file
+  /prices [model in cached out | model off]  set what a model costs ($ per million tokens)
+  /stats [days|all]       tokens and cost per day and per project (default: the last 7 days)
   /review [what]          a read-only code review: uncommitted (default), branch <base>,
                           commit <sha>, or your own instructions
   /mention <file>         attach a file to your next message (or write @path in a message)
@@ -326,7 +331,9 @@ class App:
         self._skills = None     # name -> path, once listed
         self.writer = None      # writes commit messages and pull request descriptions
         self._limits_unavailable = ""
-        self.queued = collections.deque()  # /queue: tasks waiting for the current one to finish  # why plan limits can't be shown (API-key sign-in), once known
+        self.queued = collections.deque()  # /queue: tasks waiting for the current one to finish
+        self.last_run = {}      # what the last task did, for --json
+        costs.load_prices()     # /prices: saved model prices, so costs show in dollars  # why plan limits can't be shown (API-key sign-in), once known
         self._last_message = ""
         self.codex = codex
         self.sdk = sdk
@@ -468,13 +475,17 @@ class App:
         point = {"mode": self.mode, "title": self._last_message, "tree": undo.snapshot(self.root),
                  "marks": {a.name: len(a.turns_log) for a in self.mode.agents()}}
         started = time.monotonic()
+        used_before = costs.snapshot(self.mode.agents())
+        answer, error = "", None
         self._busy = True
         try:
-            work()
+            answer = work() or ""
         except KeyboardInterrupt:
             self.mode.repair()  # tells Codex to stop the running turn
+            error = "stopped"
             print(f"\n{YELLOW}Stopped. You can carry on with a new message.{RESET}")
         except self.sdk.CodexError as e:
+            error = str(e)
             print(f"{RED}Codex error: {e}{RESET}")
         finally:
             self._busy = False
@@ -482,6 +493,9 @@ class App:
             if any(len(a.turns_log) > point["marks"].get(a.name, 0) for a in self.mode.agents()):
                 self.undo_points.append(point)
             self.save()
+            used = costs.record(used_before, self.mode.agents(), self.root, self.mode.name)
+            self.last_run = {"answer": answer, "error": error, "point": point, "used": used,
+                             "seconds": round(time.monotonic() - started, 1)}
         self.status_line()
         self.check_limits()
         took = time.monotonic() - started
@@ -707,9 +721,11 @@ class App:
         if self.writer is None or self.writer.model != model:
             self.writer = make_writer(self.codex, self.sdk, self.root, self.settings, model, on_event=self.screen.event)
         self.writer.reset()  # each message is written in a fresh, read-only conversation
+        before = costs.snapshot([self.writer])
         try:
             return write_message(self.writer, what, text)
         finally:
+            costs.record(before, [self.writer], self.root, "writer")
             self.writer.discard()  # kept out of Codex's history
 
     def commit(self, arg: str = "") -> bool:
@@ -929,6 +945,100 @@ class App:
         finally:
             self.screen.finish()
 
+    def result(self) -> dict:
+        """What the last task did, for --json: its answer, the files it changed, tokens and cost."""
+        run = self.last_run
+        point = run.get("point") or {}
+        files = []
+        if point.get("tree"):
+            meaning = {"restore": "modified", "delete": "added", "bring back": "deleted"}
+            files = [{"path": path, "change": meaning[what]} for what, path in undo.changes(self.root, point["tree"])]
+        else:  # no git: the files named in Codex's diffs
+            seen = []
+            for agent in self.mode.agents():
+                for _, diff in agent.turns_log[point.get("marks", {}).get(agent.name, 0):]:
+                    seen += re.findall(r"^\+\+\+ b/(.+)$", diff or "", re.MULTILINE)
+            files = [{"path": f, "change": "changed"} for f in dict.fromkeys(seen)]
+        failures = {a.name: a.last_failure for a in self.mode.agents() if a.last_failure}
+        statuses = {a.last_status for a in self.mode.agents() if a.last_status}
+        answer = run.get("answer", "")
+        ok = (not run.get("error") and not failures and "failed" not in statuses
+              and not answer.startswith(("[Codex could not finish", "[Stopped")))
+        tokens = {model: {"input": i, "cached": c, "output": o} for model, (i, c, o) in run.get("used", {}).items()}
+        cost = [costs.cost_of(m, *v) for m, v in run.get("used", {}).items()]
+        return {"ok": ok, "answer": answer, "error": run.get("error") or (next(iter(failures.values())) if failures else None),
+                "mode": self.mode.name, "project": str(self.root), "files_changed": files, "tokens": tokens,
+                "cost_usd": None if not cost or None in cost else round(sum(cost), 6),
+                "seconds": run.get("seconds"), "app_version": __version__}
+
+    def export(self, arg: str = "") -> None:
+        """/export [file]: this conversation as a Markdown file."""
+        agents = [(a.name, a._ensure_thread()) for a in self.mode.agents() if a.thread_id]
+        if not agents:
+            print("Nothing to export yet.")
+            return
+        path = Path(arg.strip().strip('"')).expanduser() if arg.strip() else export.default_path(self.root)
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        if path.suffix.lower() != ".md":
+            path = path.with_suffix(path.suffix + ".md") if path.suffix else path.with_suffix(".md")
+        try:
+            text = export.render(agents, self.title, self.root, self.mode.name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        except (OSError, self.sdk.CodexError) as e:
+            print(f"{RED}Could not export: {e}{RESET}")
+            return
+        print(f"{GREEN}* Saved the conversation to {path}{RESET}")
+
+    def prices(self, arg: str) -> None:
+        """/prices: list; /prices <model> <input> <cached> <output> ($ per million tokens); /prices <model> off."""
+        words = arg.split()
+        if len(words) == 2 and words[1] == "off":
+            print(f"Removed the price of {words[0]}." if costs.remove_price(words[0]) else f"{words[0]} has no price.")
+            return
+        if len(words) == 4:
+            try:
+                costs.set_price(words[0], *(float(w.lstrip("$")) for w in words[1:]))
+            except ValueError as e:
+                print(f"{RED}Prices must be numbers ({e}).{RESET}")
+                return
+            print(f"{words[0]}: ${words[1].lstrip('$')} input, ${words[2].lstrip('$')} cached input, "
+                  f"${words[3].lstrip('$')} output, per million tokens. Saved.")
+            return
+        if words:
+            print("Use /prices <model> <input> <cached input> <output>, in dollars per million tokens "
+                  "(from https://openai.com/api/pricing), or /prices <model> off.")
+            return
+        prices = costs.load_prices()
+        if not prices:
+            print("No prices yet, so costs show as tokens only. Add one with /prices <model> <input> <cached> <output>.")
+        for model, (i, c, o) in sorted(prices.items()):
+            print(f"  {model:22} ${i:g} input, ${c:g} cached, ${o:g} output (per million tokens)")
+
+    def stats(self, arg: str) -> None:
+        """/stats [days|all]: tokens and cost per day and per project, from the usage log."""
+        days = 36500 if arg == "all" else int(arg) if arg.isdigit() and int(arg) > 0 else 7
+        data = costs.summary(days)
+        if not data["days"]:
+            print("No usage recorded yet." if arg == "all" else f"No usage in the last {days} days.")
+            return
+
+        def money(c):
+            return f"${c:,.4f}" if data["unpriced"] == set() or c else "?"
+        label = "all time" if arg == "all" else f"the last {days} days"
+        print(f"Usage, {label}:")
+        for day, tokens, cost in data["days"][:31]:
+            print(f"  {day}  {tokens:>12,} tokens  {money(cost)}")
+        print("By project:")
+        for project, tokens, cost in data["projects"][:10]:
+            print(f"  {tokens:>12,} tokens  {money(cost):>10}  {project}")
+        tokens, cost = data["total"]
+        print(f"Total: {tokens:,} tokens, {money(cost)}")
+        if data["unpriced"]:
+            print(f"{YELLOW}No price for {', '.join(sorted(data['unpriced']))}, so their cost isn't counted. "
+                  f"Add one with /prices.{RESET}")
+
     def queue(self, arg: str) -> None:
         """/queue <task>: do it after the current task (or now, if nothing runs). /queue lists, /queue clear empties."""
         if arg == "clear":
@@ -1104,6 +1214,12 @@ class App:
             self.history(arg)
         elif name == "/queue":
             self.queue(arg)
+        elif name == "/export":
+            self.export(arg)
+        elif name == "/prices":
+            self.prices(arg)
+        elif name == "/stats":
+            self.stats(arg)
         elif name == "/commit":
             self.commit(arg)
         elif name == "/pr":
@@ -1255,14 +1371,25 @@ def main(argv=None) -> int:
                         help="check that the Codex engine still has everything this app uses (no model turn, "
                              "nothing billed), then exit")
     parser.add_argument("--quiet", action="store_true", help="with --selftest: print only what failed")
+    parser.add_argument("--json", action="store_true",
+                        help="with a task: print the result as JSON (answer, files changed, tokens, cost); "
+                             "everything else goes to stderr")
+    parser.add_argument("--offline", action="store_true",
+                        help="with --selftest: only the checks that don't start the engine")
     args = parser.parse_args(argv)
 
+    real_stdout = sys.stdout
+    if args.json:
+        if not args.task:
+            print("--json needs a task, for example: py main.py --json \"fix the failing test\"", file=sys.stderr)
+            return 2
+        sys.stdout = sys.stderr  # only the JSON result goes to stdout
     if args.version:
         print_versions()
         return 0
     if args.selftest:
         from codex_app import selftest
-        return selftest.main(quiet=args.quiet)
+        return selftest.main(quiet=args.quiet, offline=args.offline)
     if args.update:
         # Runs before Codex starts, so the engine can be replaced safely.
         _, message, failed = updater.update_everything()
@@ -1359,11 +1486,14 @@ def main(argv=None) -> int:
         if args.task and args.goal:
             app.pending = images
             app.goal(f"--budget {budget} {' '.join(args.task)}" if budget else " ".join(args.task))
-            print_usage(app.mode, app.extra_usage())
-            return 0
-        if args.task:
+        elif args.task:
             app.run_task(" ".join(args.task), images)
+        if args.task:
             print_usage(app.mode, app.extra_usage())
+            if args.json:
+                result = app.result()
+                print(json.dumps(result, ensure_ascii=False), file=real_stdout)
+                return 0 if result["ok"] else 1
             return 0
         app.pending = images
         app.loop()

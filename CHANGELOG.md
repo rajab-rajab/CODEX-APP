@@ -2,6 +2,19 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+Checked on every change, scriptable, and real costs.
+
+- **Tests on GitHub**: every pull request and push to `main` runs all tests on Windows and Linux, plus
+  the offline part of `--selftest` (`--selftest --offline`). No key is needed and nothing is billed.
+- **`--json`**: one task, and only its result on stdout as JSON (answer, files changed, tokens, cost,
+  success), for scripts, scheduled jobs and CI. The exit code says whether it succeeded.
+- **`/export [file]`**: the conversation as Markdown, with commands, their output and diffs.
+- **`/prices`**: enter your models' prices once; `/usage` and the line after each task show dollars.
+- **`/stats [days|all]`**: tokens and cost per day and per project, from a usage log that never holds
+  your messages.
+
 ## 1.6.0 (2026-11-24)
 
 Safe engine updates, Codex's own review, and help for long sessions.
