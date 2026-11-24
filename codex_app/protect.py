@@ -113,5 +113,90 @@ def dangerous_command(command) -> Optional[str]:
     return None
 
 
+# --- secret files ----------------------------------------------------------------------------------
+# Codex's sandbox controls writing, not reading, so these are kept away from Codex in three ways: Codex
+# is told never to touch them, a request to leave the sandbox that touches one is refused, and the
+# secret guard stops a turn the moment Codex starts to read or change one (see agent.py).
+
+_SECRET_FILE = re.compile(
+    r"^(\.env(\.(?!(example|sample|template|dist|defaults)$)[^.\\/]+)*"   # .env, .env.local (not .env.example)
+    r"|id_(rsa|dsa|ecdsa|ed25519)|\.git-credentials|\.netrc|_netrc|\.pgpass|\.npmrc|\.pypirc"
+    r"|credentials(\.json)?|secrets?\.(json|ya?ml|toml|env|txt)|service[-_]account.*\.json"
+    r"|.*\.(pem|key|p12|pfx|kdbx|keystore|jks|sqlite|sqlite3|db))$",
+    re.IGNORECASE)
+_SECRET_FOLDERS = {"data", ".ssh", ".aws", ".gnupg", ".azure", ".kube", ".docker"}
+_SKIP_FOLDERS = {".git", "node_modules", ".venv", "venv", "env", "__pycache__", ".tox", ".mypy_cache",
+                 ".pytest_cache", ".next", "dist", "build", ".idea", ".vscode"}
+
+
+def is_secret_path(path) -> bool:
+    """Whether a path is a file that may hold passwords, keys or private data: .env files (not
+    .env.example), keys, credentials, databases, or anything in a data/, .ssh/ or .aws/ folder."""
+    parts = [p for p in re.split(r"[\\/]+", str(path or "").strip().strip("'\"`")) if p not in ("", ".")]
+    if not parts:
+        return False
+    if any(p.lower() in _SECRET_FOLDERS for p in parts[:-1]):
+        return True
+    return bool(_SECRET_FILE.match(parts[-1]))
+
+
+def secret_in_command(command) -> Optional[str]:
+    """The first secret file a command names, or None."""
+    if isinstance(command, (list, tuple)):
+        command = " ".join(str(c) for c in command)
+    for token in re.split(r"""[\s'"`|;&<>(),=]+""", str(command or "")):
+        token = token.strip().rstrip(":")
+        if token and not token.startswith("-") and is_secret_path(token):
+            return token
+    return None
+
+
+def guard_item(item) -> Optional[str]:
+    """For the secret guard: why Codex must be stopped before this command or edit, or None.
+    `item` is a commandExecution or fileChange item as Codex reports it when it starts."""
+    def value(x):
+        return getattr(x, "value", x)
+
+    kind = getattr(item, "type", "")
+    if kind == "commandExecution":
+        for action in getattr(item, "command_actions", None) or []:
+            action = getattr(action, "root", action)
+            path = getattr(action, "path", None)
+            if value(getattr(action, "type", "")) == "read" and path and is_secret_path(path):
+                return f"Codex started to read a secret file ({path})"
+            found = secret_in_command(getattr(action, "command", ""))
+            if found:
+                return f"Codex started a command that touches a secret file ({found})"
+        found = secret_in_command(getattr(item, "command", ""))
+        if found:
+            return f"Codex started a command that touches a secret file ({found})"
+    elif kind == "fileChange":
+        for change in getattr(item, "changes", None) or []:
+            path = getattr(change, "path", "")
+            if is_secret_path(path):
+                return f"Codex started to change a secret file ({path})"
+    return None
+
+
+def find_secret_files(root, limit: int = 20, max_files: int = 50_000) -> list[str]:
+    """Secret files inside the project (relative paths, at most `limit`), skipping folders like .git and
+    node_modules. Used to warn at start: inside the project, only instructions and the guard keep Codex
+    away from them."""
+    root = Path(root)
+    found, seen = [], 0
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if d not in _SKIP_FOLDERS)
+        for name in sorted(files):
+            seen += 1
+            rel = os.path.relpath(os.path.join(folder, name), root)
+            if is_secret_path(rel):
+                found.append(rel.replace("\\", "/"))
+                if len(found) >= limit:
+                    return found
+            if seen >= max_files:
+                return found
+    return found
+
+
 def running_interactively() -> bool:
     return sys.stdin is not None and sys.stdin.isatty()

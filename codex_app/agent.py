@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import approvals, goals
+from . import approvals, engine, goals
 from .config import PRICES
 
 # on_event(agent_name, kind, text). kinds: "text" (streamed answer), "thinking", "tool", "tool_result",
@@ -117,7 +117,8 @@ def format_plan(payload) -> str:
 class CodexAgent:
     def __init__(self, codex, *, name: str, model: str, effort: str, sandbox, approval_mode,
                  instructions: str, cwd: Path, on_event: Optional[EventHandler] = None,
-                 config: Optional[dict] = None, thread_cls=None, quiet: bool = False):
+                 config: Optional[dict] = None, thread_cls=None, quiet: bool = False,
+                 secret_guard: Optional[Callable] = None):
         self.codex = codex
         self.name = name
         self.model = model
@@ -138,6 +139,11 @@ class CodexAgent:
         self._goal = None
         self._sandbox_changed = False
         self._model_changed = False
+        # secret_guard(item) -> why, or None: checks each command and edit as Codex starts it (protect.py).
+        self.secret_guard = secret_guard
+        self.guard_hits: list[str] = []
+        # (turn id, diff) of every turn this agent ran, oldest first: what /undo goes back through.
+        self.turns_log: list[tuple] = []
 
     # --- thread lifecycle ----------------------------------------------------------------------
 
@@ -165,6 +171,15 @@ class CodexAgent:
         """Start a new thread on the next message (usage totals are kept)."""
         self.thread = None
         self.thread_id = None
+        self.turns_log = []
+
+    def undo_turns(self, keep: int) -> None:
+        """Take every turn after the first `keep` out of the conversation (for /undo)."""
+        later = self.turns_log[keep:]
+        first = next((tid for tid, _ in later if tid), None)
+        if first and self.thread_id:
+            engine.revert(self.codex, self.thread_id, first)
+        del self.turns_log[keep:]
 
     def fork(self) -> Optional[str]:
         """Carry on in a copy of this conversation, leaving the original as it is. Returns the new thread ID."""
@@ -225,6 +240,7 @@ class CodexAgent:
 
     def load_state(self, state: dict) -> None:
         self.reset()
+        self.turns_log = []
         self.thread_id = state.get("thread_id")
         self.usage = Usage.from_dict(state.get("usage", {}))
 
@@ -257,7 +273,8 @@ class CodexAgent:
         self._turn = turn = thread.turn(message, **options)
         try:
             return self._consume(turn.stream(), show_text=output_schema is None,
-                                 stream_text=not (self.quiet if quiet is None else quiet))
+                                 stream_text=not (self.quiet if quiet is None else quiet),
+                                 turn_id=getattr(turn, "id", None))
         finally:
             self._turn = None
 
@@ -271,13 +288,36 @@ class CodexAgent:
             self._ensure_thread()
         self._goal = goal = goals.start(self.codex, self.thread_id, objective, token_budget)
         try:
-            return self._consume(iter(goal), show_text=True, stream_text=not self.quiet)
+            return self._consume(iter(goal), show_text=True, stream_text=not self.quiet,
+                                 turn_id=getattr(goal, "first_turn_id", None))
         finally:
             self._goal = None
 
-    def _consume(self, stream, show_text: bool, stream_text: bool) -> str:
+    def _guard(self, item, turn_id) -> bool:
+        """Stop the turn if Codex starts reading or changing a secret file, and take the turn out of the
+        conversation, so what it read is never sent to OpenAI with later messages. True if it stopped."""
+        why = self.secret_guard(item) if self.secret_guard else None
+        if not why:
+            return False
+        self.guard_hits.append(why)
+        self._emit("tool_error", f"Stopped: {why}.")
+        self.interrupt()
+        return True
+
+    def _forget_turn(self, turn_id) -> None:
+        if not (turn_id and self.thread_id):
+            return
+        try:
+            engine.revert(self.codex, self.thread_id, turn_id)
+            self._emit("notice", "That turn was taken out of the conversation, so what Codex read isn't sent "
+                                 "to OpenAI again. Files it changed are as they were left (/undo puts them back).")
+        except Exception as e:
+            self._emit("notice", f"Couldn't take the turn out of the conversation ({e}); /new starts fresh.")
+
+    def _consume(self, stream, show_text: bool, stream_text: bool, turn_id=None) -> str:
         answers, status, error, streamed = [], None, None, False
         self.last_diff = ""
+        guarded = False
         for event in stream:
             method = getattr(event, "method", "")
             payload = getattr(event, "payload", None)
@@ -287,9 +327,12 @@ class CodexAgent:
                     streamed = True
                     self._emit("text", delta)
             elif method == "item/started":
-                line = _describe_started(_root(getattr(payload, "item", None)))
+                started = _root(getattr(payload, "item", None))
+                line = _describe_started(started)
                 if line:
                     self._emit("tool", line)
+                if not guarded and self._guard(started, turn_id):
+                    guarded = True
             elif method == "item/completed":
                 self._completed(_root(getattr(payload, "item", None)), answers, streamed or not show_text)
             elif method == "turn/plan/updated":
@@ -309,6 +352,13 @@ class CodexAgent:
 
         if self.last_diff.strip():
             self._emit("diff", self.last_diff)
+        if turn_id is not None or self.last_diff:
+            self.turns_log.append((turn_id, self.last_diff))
+        if guarded:
+            self._forget_turn(turn_id)
+            if self.turns_log and self.turns_log[-1][0] == turn_id:
+                self.turns_log.pop()  # it's out of the conversation, so /undo shouldn't look for it
+            return "[Stopped: Codex tried to read or change a secret file.]"
         if status == "failed":
             why = getattr(error, "message", None) or str(error or "unknown error")
             self._emit("notice", f"Codex could not finish: {why}")

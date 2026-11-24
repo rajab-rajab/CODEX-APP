@@ -2,6 +2,23 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+Safer and more capable: undo, a secret guard, and Codex's tools and skills.
+
+- **`/undo`**, as in official Codex: puts the files and the conversation back to before your last
+  message (again to go further back), after showing what it will change. In a git project it uses
+  private snapshots that never touch your index, branches or history, and never changes files your
+  `.gitignore` leaves out.
+- **Secret guard**: when Codex starts to read or change a secret file (`.env`, keys, credentials,
+  databases, `data/`, `.ssh/` ...), the turn is stopped and taken out of the conversation, so what Codex
+  read is never sent to OpenAI again. Requests to leave the sandbox that touch secret files are refused.
+  The app lists the secret files in a project at start; `/secrets` lists them and turns the guard on or off.
+- **`/mcp`** lists Codex's MCP servers (external tools) with their status and tools, and **`/skills`**
+  lists its skills; `$name` in a message attaches a skill.
+- Fixed: on Windows, `/diff` and the background update check could hang since 1.3.0, because git
+  inherited the input the steering thread was reading. Every command the app starts now gets its own.
+
 ## 1.3.0 (2026-11-24)
 
 The most powerful Codex App yet. Every new feature was tested with real tasks on Codex engine 0.172.0.

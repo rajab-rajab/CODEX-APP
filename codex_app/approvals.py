@@ -67,6 +67,9 @@ class Approver:
             why = protect.dangerous_command(text)
             if why:
                 return self._decline(f"the command {why}: {text}")
+            secret = protect.secret_in_command(text)
+            if secret:
+                return self._decline(f"the command touches a secret file ({secret}): {text}")
         command = "; ".join(inner) or command
         if cwd and protect.is_system_path(cwd):
             return self._decline(f"the command would run in a system folder ({cwd})")

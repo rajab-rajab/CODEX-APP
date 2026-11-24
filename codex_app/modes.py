@@ -17,7 +17,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import approvals, profiles
+from . import approvals, profiles, protect
 from .agent import CodexAgent, Usage
 from .config import Settings
 
@@ -34,8 +34,10 @@ _SHARED_RULES = """\
 - Look at the relevant code before changing it. Follow the project's existing style.
 - Make the smallest change that does the job. Don't add features nobody asked for.
 - Never read, print or change secret files: .env and .env.* (except .env.example), keys (*.pem, *.key,
-  id_rsa*), databases (*.sqlite, *.db) or anything in a data/ folder. They can hold passwords and
-  private user data. If you need something from one, ask the user.
+  *.p12, *.pfx, id_rsa*), credentials (credentials.json, secrets.*, .npmrc, .pypirc, .netrc,
+  .git-credentials), databases (*.sqlite, *.db) or anything in a data/, .ssh/ or .aws/ folder. They can
+  hold passwords and private user data. If you need something from one, ask the user. (The app stops
+  any turn that starts to read or change one.)
 - Never put API keys, passwords or other secrets in files or commands.
 - Never touch the operating system: system folders (C:\\Windows, C:\\Program Files, C:\\ProgramData, /etc,
   /usr, /bin, /boot, /System), the registry, drivers, boot settings, disks and partitions. Never run commands
@@ -130,7 +132,8 @@ def approval_for(approval: str, sdk):
 
 def _agent(codex, sdk, settings: Settings, **kw) -> CodexAgent:
     return CodexAgent(codex, approval_mode=approval_for(settings.approval, sdk), config=settings.thread_config(),
-                      thread_cls=getattr(sdk, "Thread", None), **kw)
+                      thread_cls=getattr(sdk, "Thread", None),
+                      secret_guard=(lambda item: protect.guard_item(item) if settings.secret_guard else None), **kw)
 
 
 def make_reviewer(codex, sdk, workspace_root: Path, settings: Settings, model: str, on_event=None) -> CodexAgent:

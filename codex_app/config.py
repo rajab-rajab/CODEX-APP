@@ -77,6 +77,7 @@ class Settings:
     power: str = "normal"          # normal | high | max (see profiles.py)
     team_size: int = 3             # team mode: how many workers may work at the same time
     structured_verdicts: bool = True  # dual/team: the planner's verdict as structured output, not text
+    secret_guard: bool = True      # stop a turn the moment Codex starts to read or change a secret file
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -95,6 +96,7 @@ class Settings:
         s.profile = _env("CODEX_APP_PROFILE", s.profile)
         s.power = _env("CODEX_APP_POWER", s.power)
         s.team_size = _env_int("CODEX_APP_TEAM_SIZE", s.team_size)
+        s.secret_guard = _env_bool("CODEX_APP_SECRET_GUARD", s.secret_guard)
         s.check()
         return s
 
