@@ -89,6 +89,8 @@ class Settings:
     browser_channel: str = "msedge"  # msedge | chrome | chromium
     browser_headless: bool = False   # no window (for servers); by default you can watch it work
     browser_server: object = None    # set by the app when the browser is ready (not a setting to save)
+    browser_sites: str = ""          # comma-separated allowlist: only these sites open (for shared installs)
+    browser_private: bool = False    # allow private network addresses (routers, intranets): off
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -117,6 +119,8 @@ class Settings:
         s.browser = _env_bool("CODEX_APP_BROWSER", s.browser)
         s.browser_channel = _env("CODEX_APP_BROWSER_CHANNEL", s.browser_channel)
         s.browser_headless = _env_bool("CODEX_APP_BROWSER_HEADLESS", s.browser_headless)
+        s.browser_sites = _env("CODEX_APP_BROWSER_SITES", s.browser_sites)
+        s.browser_private = _env_bool("CODEX_APP_BROWSER_PRIVATE", s.browser_private)
         s.check()
         return s
 

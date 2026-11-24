@@ -47,6 +47,27 @@ conversation starts); `/save` remembers it for the project.
 It needs Playwright, which drives the browser: `py -m pip install playwright`. It uses the Edge or Chrome
 already on your PC; if neither is there, `py -m playwright install chromium` downloads one.
 
+### Misuse protection: no hacking with the browser
+
+The browser must not become a tool for attacking websites. The people misusing a tool are its own users,
+so these rules apply whatever the user says or approves (`codex_app/browser_guard.py`):
+
+| Rule | What it stops |
+|---|---|
+| **No attack input.** Text typed into a page, and addresses opened, are refused when they carry typical attack strings: SQL injection (`' OR '1'='1`, `UNION SELECT`), script injection (`<script>`, `onerror=`), path traversal (`../../etc/passwd`), command injection, template and Log4Shell-style strings, also URL-encoded | Probing or exploiting a site's forms and addresses. Ordinary text and code (a comment with \`code\`, JavaScript with `${price}`) still work |
+| **No internal networks.** Private, link-local and cloud-metadata addresses (routers, intranets, `169.254.169.254`) are blocked for every request a page makes, redirects included. Your own computer (`localhost`) stays allowed | Using the browser to reach devices and services behind a firewall |
+| **Rate limits.** At most 40 actions a minute, 20 pages a minute per site and 15 submits an hour | Brute-forcing logins, flooding a site, mass sign-ups or posts |
+| **No CAPTCHAs.** A page with a CAPTCHA is never clicked or typed into | Getting around a site's bot protection |
+| **No passwords or card numbers** (see above) | Credential stuffing, card testing |
+| **Optional site allowlist.** `CODEX_APP_BROWSER_SITES=mysite.com,example.org` lets the browser open only those sites (and their subdomains) | Everything off-list, for a shared or company install |
+| **Misuse log.** Every action, and every refusal, is recorded in `.codex-app\browser-log.jsonl` (time, site, action, why it was refused; never the text typed). `/browser log` shows the latest | Misuse going unnoticed |
+| **Codex is told** never to attack, scan, overload or test the security of any site, or get around its protections, whoever asks and whatever the reason | Misuse requests, before the browser is even used |
+
+What these rules can't do: anyone who runs Codex App on their own computer can change its code, so they
+can't stop someone who rewrites the app. They stop misuse *through* Codex App. For a shared install, keep
+the app's folder read-only for its users, set `CODEX_APP_BROWSER_SITES`, and review the log. Using any tool
+to attack a website is illegal in most countries.
+
 The safety rules are in the browser's own code (`codex_app/browser_mcp.py`), not only in what Codex is
 told, so they hold even if a web page tricks Codex.
 
@@ -355,6 +376,8 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_BROWSER` | `no` | Codex App's private browser (same as `--browser`) |
 | `CODEX_APP_BROWSER_CHANNEL` | `msedge` | Which browser it drives: `msedge`, `chrome` or `chromium` |
 | `CODEX_APP_BROWSER_HEADLESS` | `no` | Run it without a window |
+| `CODEX_APP_BROWSER_SITES` | (any) | Only these sites (comma-separated, subdomains included) may open in the browser |
+| `CODEX_APP_BROWSER_PRIVATE` | `no` | Allow private network addresses (routers, intranets) in the browser |
 | `CODEX_APP_PROFILE` | `auto` | Task profile: `auto`, `coding`, `chat`, `maths` |
 | `CODEX_APP_POWER` | `normal` | Power level: `normal`, `high`, `max` |
 | `CODEX_APP_TEAM_SIZE` | `3` | Team mode: workers at the same time (1 to 8) |
@@ -463,6 +486,7 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/outside.py` | Switching off computer use, browsers and account plugins for Codex App |
 | `codex_app/browser_mcp.py` | The built-in browser: an MCP server with its safety rules |
 | `codex_app/browser.py` | The app's side of the browser: starting it and asking you before risky actions |
+| `codex_app/browser_guard.py` | The browser's misuse protection: attack input, networks, rate limits, CAPTCHAs, log |
 | `codex_app/profiles.py` | Task profiles (coding, chat, maths) and power presets |
 | `codex_app/goals.py` | Goal mode: Codex working on its own until a goal is done |
 | `codex_app/undo.py` | File snapshots and restoring them for `/undo` |

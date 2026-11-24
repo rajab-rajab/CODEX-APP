@@ -18,19 +18,29 @@ Safety is enforced here, in code, not left to Codex:
   book, subscribe, transfer, confirm ...) waits for you: Codex App asks y/N. Without Codex App to ask (no
   --confirm-dir), such actions are refused.
 - What a page says is returned marked as untrusted data, so a website can't give Codex instructions.
+- Misuse protection (browser_guard.py), whatever the user says: no attack strings typed or opened, no
+  internal networks (for every request a page makes, redirects included), rate limits, no CAPTCHAs, an
+  optional site allowlist, and a log of every action.
 
 The MCP protocol (JSON-RPC over stdin/stdout, one message per line) is implemented here directly, so no
 extra package is needed beyond Playwright."""
 
 import argparse
 import base64
+import os
 import json
 import re
 import sys
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+
+try:
+    from codex_app.browser_guard import CAPTCHA_SCRIPT, Blocked, Guard
+except ImportError:  # started as a script: the app folder isn't on the path yet
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from codex_app.browser_guard import CAPTCHA_SCRIPT, Blocked, Guard
 
 PROTOCOL = "2025-06-18"
 TEXT_LIMIT = 8000       # characters of page text returned by read()
@@ -123,9 +133,11 @@ class Refused(Exception):
 
 
 class Browser:
-    def __init__(self, channel: str = "msedge", headless: bool = False, confirm_dir: str = None):
+    def __init__(self, channel: str = "msedge", headless: bool = False, confirm_dir: str = None,
+                 guard: Guard = None):
         self.channel, self.headless = channel, headless
         self.confirm_dir = Path(confirm_dir) if confirm_dir else None
+        self.guard = guard or Guard()
         self._pw = self._browser = self._page = None
 
     # --- the browser --------------------------------------------------------------------------------
@@ -145,8 +157,12 @@ class Browser:
                 raise Refused(f"No browser could be started ({last}). Install Microsoft Edge or Chrome, or run: "
                               "py -m playwright install chromium")
             context = self._browser.new_context(accept_downloads=False)  # fresh and private: no sign-ins
+            context.route("**/*", self._route)  # every request the page makes, frames included
+            if hasattr(context, "route_web_socket"):  # WebSockets go around routes otherwise
+                context.route_web_socket("**/*", self._route_socket)
             self._page = context.new_page()
             self._page.set_default_timeout(20_000)
+            self._page.set_default_navigation_timeout(45_000)  # Edge's first web request can take ~20 s on Windows
         return self._page
 
     def close(self):
@@ -158,6 +174,56 @@ class Browser:
                     thing.close()
             except Exception:
                 pass
+
+    def _route(self, route):
+        """Let a request through only if the misuse rules allow it: no internal networks for any request,
+        and (with an allowlist) only listed sites for pages navigated to.
+
+        Playwright doesn't route the target of a redirect, so a public page could send the browser to
+        192.168.0.1 by redirecting there. So the browser fetches each request itself without following
+        redirects, checks where a redirect points, and only then hands the answer to the page; the page then
+        follows the redirect as a new request, which comes through here again."""
+        request = route.request
+        try:
+            main = request.is_navigation_request() and request.frame == request.frame.page.main_frame
+        except Exception:
+            main = False
+        check = self.guard.check_navigation if main else self.guard.check_request
+        try:
+            check(request.url)
+            if urlparse(request.url).scheme not in ("http", "https"):
+                route.continue_()  # data:, blob: and the like stay inside the page
+                return
+            response = route.fetch(max_redirects=0)
+            location = response.headers.get("location")
+            if 300 <= response.status < 400 and location:
+                check(urljoin(request.url, location))
+        except Blocked as e:
+            self.guard.log("blocked request", request.url, refused=str(e))
+            route.abort("blockedbyclient")
+            return
+        except Exception:
+            route.abort("failed")  # the site didn't answer
+            return
+        route.fulfill(response=response)
+
+    def _route_socket(self, socket):
+        try:
+            self.guard.check_request(socket.url.replace("ws://", "http://", 1).replace("wss://", "https://", 1))
+        except Blocked as e:
+            self.guard.log("blocked request", socket.url, refused=str(e))
+            socket.close()
+            return
+        socket.connect_to_server()
+
+    def _check_page(self, action: str) -> None:
+        page = self.page()
+        try:
+            widget = bool(page.evaluate(CAPTCHA_SCRIPT))
+            text = page.evaluate("() => document.body ? document.body.innerText.slice(0, 5000) : ''") or ""
+        except Exception:
+            widget, text = False, ""
+        self.guard.check_page(text, page.url, action, widget)
 
     def _url(self) -> str:
         return self._page.url if self._page is not None else ""
@@ -216,7 +282,14 @@ class Browser:
         parsed = urlparse(url if scheme else f"https://{url}")
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise Refused(f"Only http and https addresses can be opened, not '{url}'.")
-        self.page().goto(parsed.geturl(), wait_until="domcontentloaded")
+        self.guard.check_url(parsed.geturl())
+        try:
+            self.page().goto(parsed.geturl(), wait_until="domcontentloaded")
+        except Exception as e:
+            if "ERR_BLOCKED_BY_CLIENT" in str(e):
+                raise Blocked("That page (or where it redirects) is on a private network or not an allowed site.")
+            raise
+        self.guard.log("open", self.page().url)
         return self.read()
 
     def read(self) -> str:
@@ -242,9 +315,12 @@ class Browser:
         el = self._element(ref)
         info = el.evaluate(_DESCRIBE)
         label = info["label"] or info["name"] or f"element {ref}"
+        self._check_page("click")
         # A form that sends data (POST: orders, messages, sign-ups) needs a yes; a search (GET) doesn't.
         if (info["submits"] and info["formMethod"] != "get") or RISKY.search(label):
+            self.guard.check_submit(self._url())
             self.confirm(f"click '{label}'")
+        self.guard.log("click", self._url(), f"'{label}'")
         el.click()
         self._settle()
         return self.read()
@@ -256,8 +332,12 @@ class Browser:
         if info["type"] == "password" or SENSITIVE_FIELD.search(about):
             raise Refused("This field is for a password, payment card or similar: the user must fill it in "
                           "themselves. Ask them to do it in the browser window.")
+        self.guard.check_typed(text, self._url())
+        self._check_page("type")
+        self.guard.log("type", self._url(), f"{len(text)} characters into '{info['label'] or info['name']}'")
         el.fill(text)
         if submit:
+            self.guard.check_submit(self._url())
             if info["formMethod"] != "get":  # a search box (GET) just loads a page
                 self.confirm(f"submit '{text[:60]}' in '{info['label'] or info['name'] or 'the form'}'")
             el.press("Enter")
@@ -266,11 +346,14 @@ class Browser:
         return f"Typed into [{ref}]. Nothing was submitted."
 
     def select(self, ref, option: str) -> str:
+        self.guard.check_typed(option, self._url())
+        self._check_page("select")
         self._element(ref).select_option(label=option)
         return f"Chose '{option}' in [{ref}]."
 
     def press(self, key: str) -> str:
         if key.strip().lower() in ("enter", "return", "numpadenter"):
+            self.guard.check_submit(self._url())
             self.confirm("press Enter (it may submit a form)")
         self.page().keyboard.press(key)
         self._settle()
@@ -311,6 +394,7 @@ def handle(browser: Browser, message: dict):
         params = message.get("params") or {}
         name, args = params.get("name"), params.get("arguments") or {}
         try:
+            browser.guard.action(name, browser._url())
             if name == "screenshot":
                 result = {"content": [{"type": "image", "data": browser.screenshot(), "mimeType": "image/png"}]}
             elif name in {t["name"] for t in TOOLS}:
@@ -319,6 +403,9 @@ def handle(browser: Browser, message: dict):
                 return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": f"no tool {name}"}}
         except Refused as e:
             result = {"content": [{"type": "text", "text": f"Not done: {e}"}], "isError": True}
+        except Blocked as e:
+            result = {"content": [{"type": "text", "text": f"Not done (misuse protection): {e} Don't try another way."}],
+                      "isError": True}
         except Exception as e:
             result = {"content": [{"type": "text", "text": f"The browser couldn't do that: {type(e).__name__}: "
                                                            f"{str(e).splitlines()[0][:300]}"}], "isError": True}
@@ -332,8 +419,12 @@ def serve(argv=None) -> int:
     parser.add_argument("--channel", default="msedge")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--confirm-dir")
+    parser.add_argument("--allow-sites", default="", help="comma-separated: only these sites (and subdomains) open")
+    parser.add_argument("--allow-private", action="store_true", help="allow private network addresses")
+    parser.add_argument("--log-file", help="where every browser action is recorded (never what was typed)")
     args = parser.parse_args(argv)
-    browser = Browser(args.channel, args.headless, args.confirm_dir)
+    guard = Guard(tuple(args.allow_sites.split(",")), args.allow_private, args.log_file)
+    browser = Browser(args.channel, args.headless, args.confirm_dir, guard)
     out = sys.stdout
     sys.stdout = sys.stderr  # nothing but protocol messages may reach stdout
     try:
