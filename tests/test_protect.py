@@ -126,3 +126,35 @@ def test_open_thread_asks_codex_to_send_requests_to_the_user():
     approvals.open_thread(codex, lambda c, i: i, "thr_1", cwd="/p")
     approvals.open_thread(codex, lambda c, i: i, "thr_1", fork=True, cwd="/p")
     assert [(m, t) for m, t, _ in client.calls[1:]] == [("resume", "thr_1"), ("fork", "thr_1")]
+
+
+# --- requests as Codex 0.172 really sends them on Windows ------------------------------------------
+
+PWSH = '"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe"'
+
+
+def real_request(inner: str) -> dict:
+    """Shaped like a request logged from a real ask-mode run (Codex 0.172, Windows)."""
+    return {"kind": "command", "threadId": "t", "turnId": "u", "itemId": "exec-1", "environmentId": "local",
+            "reason": f"May I run {inner} with network access?", "command": f"{PWSH} -Command '{inner}'",
+            "cwd": "C:\\Users\\me\\projects\\site", "commandActions": [{"type": "unknown", "command": inner}],
+            "availableDecisions": ["accept", "cancel"]}
+
+
+def test_the_powershell_wrapper_is_not_a_system_folder_change():
+    a, said = approver(ask=False)
+    assert a(approvals.COMMAND_APPROVAL, real_request("rm -rf build")) == {"decision": "accept"}
+    assert a(approvals.COMMAND_APPROVAL, real_request("copy a.txt b.txt")) == {"decision": "accept"}
+    assert not said  # nothing refused
+
+
+def test_a_dangerous_command_inside_the_wrapper_is_still_refused():
+    a, said = approver("y")
+    assert a(approvals.COMMAND_APPROVAL, real_request("diskpart")) == {"decision": "decline"}
+    assert "diskpart" in said[-1]
+
+
+def test_the_user_is_shown_the_command_itself():
+    a, said = approver("y")
+    assert a(approvals.COMMAND_APPROVAL, real_request("curl -sI https://example.com")) == {"decision": "accept"}
+    assert "Codex wants to run: curl -sI https://example.com" in said

@@ -58,9 +58,16 @@ class Approver:
     def _command(self, params: dict) -> dict:
         command = _text(params.get("command"))
         cwd = params.get("cwd")
-        why = protect.dangerous_command(command)
-        if why:
-            return self._decline(f"the command {why}: {command}")
+        # On Windows Codex wraps every command in "C:\Program Files\PowerShell\7\pwsh.exe" -Command '...'.
+        # Check (and show) the commands inside it, which Codex lists in commandActions, so the wrapper's own
+        # path under Program Files never counts as "changing a system folder".
+        inner = [_text(a.get("command")) for a in (params.get("commandActions") or [])
+                 if isinstance(a, dict) and a.get("command")]
+        for text in inner or [command]:
+            why = protect.dangerous_command(text)
+            if why:
+                return self._decline(f"the command {why}: {text}")
+        command = "; ".join(inner) or command
         if cwd and protect.is_system_path(cwd):
             return self._decline(f"the command would run in a system folder ({cwd})")
         if not self.ask:

@@ -499,3 +499,17 @@ def test_update_notice_waits_for_the_next_prompt(tmp_path, capsys, monkeypatch):
 
 def test_cost_is_unknown_before_anything_is_used():
     assert Usage().cost() is None
+
+
+def test_a_refused_command_shows_it_did_not_run(tmp_path):
+    events = []
+    turn = [ev("item/completed", item=item(type="commandExecution", exit_code=None, aggregated_output=""))]
+    make_agent(FakeCodex({1: [turn + answer("Permission was refused.")]}), tmp_path, events).send("x")
+    assert ("tool_error", "did not run") in events
+
+
+def test_codex_may_ask_to_change_files_outside_the_project():
+    from codex_app.modes import _SHARED_RULES
+    assert "request permission through your sandbox" in _SHARED_RULES
+    assert "Never touch the operating system" in _SHARED_RULES
+    assert "anything outside the project folder" not in _SHARED_RULES  # the 1.2.0 rule that stopped ask mode
