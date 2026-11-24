@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.6.0 (2026-11-24)
 
 Safe engine updates, Codex's own review, and help for long sessions.
 
