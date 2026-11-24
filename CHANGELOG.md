@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.8.0 (2026-11-25)
 
 New engines are tested before you get them, and every update says what's new.
 
