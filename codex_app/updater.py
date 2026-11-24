@@ -18,6 +18,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -268,37 +269,112 @@ def update_everything(app_dir: Path = APP_DIR, engine_releases: Optional[Callabl
     return app_updated or engine_updated, f"{app_message}\n{engine_message}", app_failed or engine_failed
 
 
-def due_notice(app_dir: Path, home: Path, now: Optional[float] = None,
-               engine: Callable[[], EngineStatus] = None) -> Optional[str]:
-    """A short 'update available' line, checked at most once a day. Never raises, never blocks for long."""
+def check_both(app_dir: Path = APP_DIR, engine: Optional[Callable[[], EngineStatus]] = None,
+               timeout: int = 30) -> tuple[Optional[UpdateStatus], Optional[EngineStatus]]:
+    """Ask GitHub (about the app) and PyPI (about the engine) at the same time, so the wait is the
+    slower of the two instead of both added up. A check that raised comes back as None.
+
+    Plain daemon threads, not a thread pool: Python waits for pool threads when it exits, and quitting
+    the app must never wait for a slow network."""
+    results: list = [None, None]
+
+    def run(index, fn):
+        try:
+            results[index] = fn()
+        except Exception:
+            results[index] = None
+
+    threads = [threading.Thread(target=run, args=(0, lambda: check(app_dir, timeout=timeout)), daemon=True),
+               threading.Thread(target=run, args=(1, engine or (lambda: engine_check(app_dir))), daemon=True)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results[0], results[1]
+
+
+def _stamp(home: Path) -> Path:
+    return home / "update-check.json"
+
+
+def check_is_due(home: Path, now: Optional[float] = None) -> bool:
     now = time.time() if now is None else now
-    stamp = home / "update-check.json"
     try:
-        last = json.loads(stamp.read_text(encoding="utf-8")).get("checked", 0)
+        last = json.loads(_stamp(home).read_text(encoding="utf-8")).get("checked", 0)
     except (OSError, ValueError, AttributeError):
         last = 0
-    if now - last < CHECK_EVERY:
-        return None
-    lines, reached = [], False
+    return now - last >= CHECK_EVERY
+
+
+def record_check(home: Path, now: Optional[float] = None) -> None:
     try:
-        status = check(app_dir, timeout=8)
+        home.mkdir(parents=True, exist_ok=True)
+        _stamp(home).write_text(json.dumps({"checked": time.time() if now is None else now}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def gather_notice(app_dir: Path, engine: Optional[Callable[[], EngineStatus]] = None) -> tuple[Optional[str], bool]:
+    """(the 'update available' lines or None, whether GitHub or PyPI could be reached)."""
+    status, engine_status = check_both(
+        app_dir, engine or (lambda: engine_check(app_dir, releases=lambda: _pypi_releases(timeout=8))), timeout=8)
+    lines, reached = [], False
+    if status is not None:
         reached = reached or status.ok
         if status.available:
             lines.append(f"{status.message} Type /update to install it.")
-    except Exception:
-        pass
-    try:
-        engine_status = (engine or (lambda: engine_check(app_dir, releases=lambda: _pypi_releases(timeout=8))))()
+    if engine_status is not None:
         reached = reached or engine_status.ok
         if engine_status.available:
             lines.append(f"{engine_status.message} Type /exit, then run: py main.py --update")
-    except Exception:
-        pass
-    if not reached:
-        return None  # offline (or both checks failed): try again at the next start, not tomorrow
-    try:
-        home.mkdir(parents=True, exist_ok=True)
-        stamp.write_text(json.dumps({"checked": now}), encoding="utf-8")
-    except OSError:
-        pass
-    return "\n".join(lines) or None
+    return ("\n".join(lines) or None), reached
+
+
+class BackgroundNotice:
+    """The daily update check on a background thread, so the app starts without waiting for GitHub and PyPI.
+
+    take() gives the notice once it is ready (None until then, and after it was given). The check is only
+    recorded as done when take() has delivered its result, so if you quit before it finished, the next start
+    checks again instead of losing the notice for a day."""
+
+    def __init__(self, app_dir: Path, home: Path, now: Optional[float] = None,
+                 engine: Optional[Callable[[], EngineStatus]] = None, start: bool = True):
+        self.home, self.now = home, now
+        self._result: tuple[Optional[str], bool] = (None, False)
+        self._done = threading.Event()
+        self._taken = False
+        if not check_is_due(home, now):
+            self._taken = True  # checked today already: nothing to do
+            self._done.set()
+            return
+        self._thread = threading.Thread(target=self._run, args=(app_dir, engine), daemon=True)
+        if start:
+            self._thread.start()
+
+    def _run(self, app_dir, engine) -> None:
+        try:
+            self._result = gather_notice(app_dir, engine)
+        except Exception:
+            self._result = (None, False)
+        finally:
+            self._done.set()
+
+    def take(self, wait: float = 0) -> Optional[str]:
+        if self._taken or not self._done.wait(wait):
+            return None
+        self._taken = True
+        notice, reached = self._result
+        if reached:
+            record_check(self.home, self.now)  # offline: not recorded, so the next start tries again
+        return notice
+
+
+def due_notice(app_dir: Path, home: Path, now: Optional[float] = None,
+               engine: Callable[[], EngineStatus] = None) -> Optional[str]:
+    """A short 'update available' line, checked at most once a day, waiting for the answer. Never raises."""
+    if not check_is_due(home, now):
+        return None
+    notice, reached = gather_notice(app_dir, engine)
+    if reached:
+        record_check(home, now)  # offline (or both checks failed): try again at the next start, not tomorrow
+    return notice

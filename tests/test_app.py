@@ -464,3 +464,38 @@ def test_main_refuses_system_folders(tmp_path, capsys):
     import main
     assert main.main(["--project", Path(tmp_path).anchor]) == 1
     assert "root of a disk" in capsys.readouterr().out
+
+
+# --- efficiency -------------------------------------------------------------------------------------
+
+def test_planner_reviews_the_workers_diff(tmp_path):
+    diff = "--- a/calc.py\n+++ b/calc.py\n-a - b\n+a + b\n"
+    worker_turn = [ev("turn/diff/updated", diff=diff)] + answer("Changed calc.py.")
+    codex = FakeCodex({1: [answer("1. Fix add"), answer("VERDICT: APPROVED")], 2: [worker_turn]})
+    DualMode(codex, sdk, tmp_path, Settings()).run("fix add")
+    review_request = codex.turns[2]["text"]
+    assert "THE WORKER'S CHANGES:" in review_request and "+a + b" in review_request
+
+
+def test_changes_for_review():
+    from codex_app.modes import changes_for_review
+    assert "no file changes" in changes_for_review("")
+    big = "\n".join(f"+line {n}" for n in range(10_000))
+    cut = changes_for_review(big, limit=1_000)
+    assert "cut short" in cut and len(cut) < 1_300 and "+line 9999" not in cut
+
+
+def test_update_notice_waits_for_the_next_prompt(tmp_path, capsys, monkeypatch):
+    import builtins
+    main, app = make_app(tmp_path)
+    app.update_notice = NS(take=lambda: "Update available: 1.2.0 -> 1.3.0.")
+
+    def no_more_input(prompt=""):
+        raise EOFError
+    monkeypatch.setattr(builtins, "input", no_more_input)
+    app.loop()
+    assert "Update available: 1.2.0 -> 1.3.0." in capsys.readouterr().out
+
+
+def test_cost_is_unknown_before_anything_is_used():
+    assert Usage().cost() is None
