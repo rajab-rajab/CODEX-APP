@@ -25,7 +25,7 @@ def _env_bool(name: str, default: bool) -> bool:
 # https://openai.com/api/pricing. A model missing here shows token counts only, without a cost.
 PRICES: dict = {}
 
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultra")
+EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 # What Codex may do. Codex enforces this itself with its sandbox (github.com/openai/codex).
 PERMISSIONS = {
@@ -34,10 +34,20 @@ PERMISSIONS = {
     "full": "no sandbox: Codex can change anything your user account can (careful)",
 }
 
+# Official Codex's names for the same three levels (its sandbox_mode values) work too.
+PERMISSION_ALIASES = {"read-only": "plan", "workspace-write": "workspace", "danger-full-access": "full"}
+
+
+def permission_name(name: str) -> str:
+    """'plan', 'workspace' or 'full' for either this app's name or official Codex's name."""
+    name = (name or "").strip().lower()
+    return PERMISSION_ALIASES.get(name, name)
+
 # What happens when Codex wants to step outside the sandbox (for example network access).
 APPROVALS = {
     "deny_all": "always refused",
     "auto_review": "Codex's own reviewer decides each request",
+    "ask": "you answer y/n for each request, like official Codex's on-request mode (experimental)",
 }
 
 # Where saved conversations go (one folder for all projects).
@@ -61,6 +71,7 @@ class Settings:
     approval: str = "deny_all"     # see APPROVALS
     max_review_rounds: int = 2     # dual mode: how many times the planner may send work back
     update_check: bool = True      # look for a new app version once a day at start
+    web_search: bool = False       # let Codex search the web live (official Codex: --search)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -71,14 +82,20 @@ class Settings:
         s.planner_effort = _env("CODEX_APP_PLANNER_EFFORT", s.planner_effort)
         s.worker_model = _env("CODEX_APP_WORKER_MODEL", s.worker_model)
         s.worker_effort = _env("CODEX_APP_WORKER_EFFORT", s.worker_effort)
-        s.permission = _env("CODEX_APP_PERMISSION", s.permission)
+        s.permission = permission_name(_env("CODEX_APP_PERMISSION", s.permission))
         s.approval = _env("CODEX_APP_APPROVAL", s.approval)
         s.max_review_rounds = _env_int("CODEX_APP_MAX_REVIEW_ROUNDS", s.max_review_rounds)
         s.update_check = _env_bool("CODEX_APP_UPDATE_CHECK", s.update_check)
+        s.web_search = _env_bool("CODEX_APP_SEARCH", s.web_search)
         s.check()
         return s
 
+    def thread_config(self) -> dict:
+        """Extra Codex settings for every thread."""
+        return {"web_search": "live"} if self.web_search else {}
+
     def check(self) -> None:
+        self.permission = permission_name(self.permission)
         for effort in (self.single_effort, self.planner_effort, self.worker_effort):
             if effort not in EFFORT_LEVELS:
                 raise ValueError(f"effort must be one of {', '.join(EFFORT_LEVELS)}, not '{effort}'")

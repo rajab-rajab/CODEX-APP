@@ -59,6 +59,12 @@ class FakeThread:
         self.codex.turns.append({"thread": self.id, "text": text, "options": options, "start": self.options})
         return FakeTurn(self.codex.script[self.id].pop(0))
 
+    def compact(self):
+        self.codex.compacted.append(self.id)
+
+    def set_name(self, name):
+        self.codex.names[self.id] = name
+
 
 class FakeCodex:
     """script: thread number (1, 2, ...) -> list of turns, each a list of events."""
@@ -66,6 +72,7 @@ class FakeCodex:
     def __init__(self, script):
         self.script = {f"thr_{k}": v for k, v in script.items()}
         self.started, self.resumed, self.turns = [], [], []
+        self.forked, self.compacted, self.names = [], [], {}
 
     def thread_start(self, **options):
         thread_id = f"thr_{len(self.started) + 1}"
@@ -75,6 +82,12 @@ class FakeCodex:
     def thread_resume(self, thread_id, **options):
         self.resumed.append(thread_id)
         return FakeThread(self, thread_id, options)
+
+    def thread_fork(self, thread_id, **options):
+        new_id = f"{thread_id}_fork"
+        self.forked.append(thread_id)
+        self.script.setdefault(new_id, [])
+        return FakeThread(self, new_id, options)
 
 
 @pytest.fixture(autouse=True)
@@ -253,3 +266,201 @@ def test_only_agents_md_counts_as_read_by_codex(tmp_path):
     assert project_instructions(tmp_path)[0] == ""
     (tmp_path / "AGENTS.md").write_text("x", encoding="utf-8")
     assert project_instructions(tmp_path)[0] == "AGENTS.md"
+
+
+# --- official Codex features ------------------------------------------------------------------------
+
+def test_plan_and_diff_are_shown(tmp_path):
+    events = []
+    turn = [
+        ev("turn/plan/updated", explanation="Fixing add", plan=[NS(step="Read calc.py", status=NS(value="completed")),
+                                                               NS(step="Fix add", status=NS(value="inProgress")),
+                                                               NS(step="Run tests", status=NS(value="pending"))]),
+        ev("turn/diff/updated", diff="--- a/calc.py\n+++ b/calc.py\n-a - b\n+a + b\n"),
+    ] + answer("Fixed.")
+    make_agent(FakeCodex({1: [turn]}), tmp_path, events).send("fix")
+    assert ("plan", "Fixing add\n[x] Read calc.py\n[>] Fix add\n[ ] Run tests") in events
+    assert ("diff", "--- a/calc.py\n+++ b/calc.py\n-a - b\n+a + b\n") in events
+
+
+def test_context_left(tmp_path):
+    turn = answer("x")[:2] + [
+        ev("thread/tokenUsage/updated", token_usage=NS(
+            total=NS(input_tokens=900, cached_input_tokens=0, output_tokens=100, reasoning_output_tokens=0),
+            last=NS(total_tokens=25_000), model_context_window=100_000)),
+        ev("turn/completed", turn=NS(status=NS(value="completed"), error=None))]
+    agent = make_agent(FakeCodex({1: [turn]}), tmp_path)
+    agent.send("x")
+    assert agent.usage.context_left() == 75
+    assert Usage.from_dict(agent.usage.to_dict()).context_left() == 75
+
+
+def test_model_switch_goes_with_the_next_turn(tmp_path):
+    codex = FakeCodex({1: [answer("a"), answer("b"), answer("c")]})
+    agent = make_agent(codex, tmp_path)
+    agent.send("1")
+    agent.set_model("gpt-6.2-astra", "high")
+    agent.send("2")
+    agent.send("3")
+    assert "model" not in codex.turns[0]["options"]
+    assert codex.turns[1]["options"] == {"effort": "high", "model": "gpt-6.2-astra"}
+    assert "model" not in codex.turns[2]["options"] and codex.turns[2]["options"]["effort"] == "high"
+
+
+def test_fork_compact_rename(tmp_path):
+    codex = FakeCodex({1: [answer("a")]})
+    mode = SingleMode(codex, sdk, tmp_path, Settings())
+    assert mode.compact() is False and mode.fork() is False  # nothing to work on yet
+    mode.run("hi")
+    assert mode.compact() is True and codex.compacted == ["thr_1"]
+    mode.rename("Login bug")
+    assert codex.names == {"thr_1": "Login bug"}
+    mode.fork()
+    assert codex.forked == ["thr_1"] and mode.agent.thread_id == "thr_1_fork"
+
+
+def test_attachments_are_sent_as_codex_input(tmp_path):
+    codex = FakeCodex({1: [answer("a")]})
+    image = sdk.LocalImageInput(str(tmp_path / "shot.png"))
+    SingleMode(codex, sdk, tmp_path, Settings()).run("what is wrong here?", [image])
+    sent = codex.turns[0]["text"]
+    assert isinstance(sent, list) and sent[0] == sdk.TextInput("what is wrong here?") and sent[1] == image
+
+
+def test_dual_mode_gives_attachments_to_planner_and_first_worker_turn(tmp_path):
+    codex = FakeCodex({1: [answer("plan"), answer("VERDICT: CHANGES_NEEDED\n- x"), answer("VERDICT: APPROVED")],
+                       2: [answer("did it"), answer("fixed")]})
+    mention = sdk.MentionInput("calc.py", str(tmp_path / "calc.py"))
+    DualMode(codex, sdk, tmp_path, Settings()).run("fix", [mention])
+    planner_first, worker_first, _, worker_second, _ = [t["text"] for t in codex.turns]
+    assert mention in planner_first and mention in worker_first and isinstance(worker_second, str)
+
+
+def test_web_search_setting_goes_to_the_thread(tmp_path):
+    codex = FakeCodex({1: [answer("a")]})
+    SingleMode(codex, sdk, tmp_path, Settings(web_search=True)).run("x")
+    assert codex.started[0]["config"] == {"model_reasoning_effort": "medium", "web_search": "live"}
+
+
+def test_official_permission_names():
+    Settings(permission="read-only").check()
+    s = Settings(permission="danger-full-access")
+    s.check()
+    assert s.permission == "full"
+
+
+def test_ask_mode_opens_threads_through_the_approval_path(tmp_path, monkeypatch):
+    from codex_app import approvals
+    codex = FakeCodex({1: [answer("a")]})
+    opened = []
+
+    def fake_open(c, thread_cls, thread_id=None, fork=False, **common):
+        opened.append((thread_id, fork, common["sandbox"]))
+        return c.thread_start(**common)
+    monkeypatch.setattr(approvals, "open_thread", fake_open)
+    SingleMode(codex, sdk, tmp_path, Settings(approval="ask")).run("x")
+    assert opened == [(None, False, sdk.Sandbox.workspace_write)]
+    assert "approval_mode" not in codex.started[0]
+
+
+# --- the terminal app's new commands --------------------------------------------------------------
+
+def make_app(tmp_path, script=None, mode="single", **settings):
+    import main
+    return main, main.App(FakeCodex(script or {}), sdk, tmp_path, Settings(**settings), mode)
+
+
+def test_at_mentions_attach_files(tmp_path):
+    import main
+    (tmp_path / "calc.py").write_text("x", encoding="utf-8")
+    (tmp_path / "shot.png").write_bytes(b"png")
+    found = main.mentions_in("look at @calc.py and @shot.png, not @nobody or me@example.com", tmp_path, sdk)
+    assert found == [sdk.MentionInput("calc.py", str(tmp_path / "calc.py")),
+                     sdk.LocalImageInput(str(tmp_path / "shot.png"))]
+
+
+def test_mentions_and_pending_attachments_go_with_the_message(tmp_path):
+    (tmp_path / "calc.py").write_text("x", encoding="utf-8")
+    (tmp_path / "shot.png").write_bytes(b"png")
+    main, app = make_app(tmp_path, {1: [answer("ok")]})
+    app.command("/image shot.png")
+    app.run_task("fix @calc.py")
+    sent = app.codex.turns[0]["text"]
+    assert sent[0] == sdk.TextInput("fix @calc.py")
+    assert sdk.LocalImageInput(str(tmp_path / "shot.png")) in sent
+    assert sdk.MentionInput("calc.py", str(tmp_path / "calc.py")) in sent
+    assert app.pending == []
+
+
+def test_model_command(tmp_path, capsys):
+    main, app = make_app(tmp_path, {1: [answer("a")]})
+    app.command("/model gpt-6.2-astra xhigh")
+    assert app.settings.single_model == "gpt-6.2-astra" and app.mode.agent.effort == "xhigh"
+    app.command("/model gpt-6.2-astra silly")
+    assert "Effort must be one of" in capsys.readouterr().out
+    _, dual = make_app(tmp_path, mode="dual")
+    dual.command("/model worker gpt-6.2-astra")
+    assert dual.mode.worker.model == "gpt-6.2-astra" and dual.mode.planner.model == Settings().planner_model
+
+
+def test_review_is_read_only_and_separate(tmp_path):
+    main, app = make_app(tmp_path, {1: [answer("No problems found.")]})
+    app.command("/review branch main")
+    start = app.codex.started[0]
+    assert start["sandbox"] == sdk.Sandbox.read_only and "REVIEWER" in start["developer_instructions"]
+    assert "git diff main...HEAD" in app.codex.turns[0]["text"]
+    assert app.mode.is_empty()  # the conversation itself is untouched
+
+
+def test_diff_command_shows_changes_and_new_files(tmp_path, capsys):
+    import subprocess
+    main, app = make_app(tmp_path)
+    app.command("/diff")
+    assert "not a git repository" in capsys.readouterr().out
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "new.py").write_text("x", encoding="utf-8")
+    app.command("/diff")
+    assert "new.py" in capsys.readouterr().out
+
+
+def test_permission_aliases_and_full_needs_confirmation(tmp_path, capsys, monkeypatch):
+    main, app = make_app(tmp_path)
+    app.command("/permissions read-only")
+    assert app.settings.permission == "plan" and app.mode.agent.sandbox == sdk.Sandbox.read_only
+    monkeypatch.setattr(main.protect, "running_interactively", lambda: False)
+    app.command("/permission full")
+    assert app.settings.permission == "plan" and "Refused" in capsys.readouterr().out
+    monkeypatch.setattr(main.protect, "running_interactively", lambda: True)
+    app.screen.ask = lambda question: "yes"
+    app.command("/permission danger-full-access")
+    assert app.settings.permission == "full" and app.mode.agent.sandbox == sdk.Sandbox.full_access
+
+
+def test_approval_command(tmp_path, capsys):
+    from codex_app import approvals
+    main, app = make_app(tmp_path)
+    app.command("/approval ask")  # the fake Codex has no request handler to hook into
+    assert app.settings.approval == "deny_all" and "available" in capsys.readouterr().out
+    app.codex._client = NS(_approval_handler=None)
+    app.approver = approvals.Approver()
+    app.command("/approval ask")
+    assert app.settings.approval == "ask" and app.approver.ask is True
+    assert app.codex._client._approval_handler is app.approver
+    assert app.mode.agent.approval_mode == approvals.ASK
+
+
+def test_status_and_new_commands(tmp_path, capsys):
+    main, app = make_app(tmp_path, {1: [answer("hi")]})
+    app.codex.account = lambda: NS(account=None)
+    app.run_task("hello")
+    app.command("/status")
+    out = capsys.readouterr().out
+    assert "thr_1" in out and "not signed in" in out and "Sandbox:" in out
+    app.command("/new")
+    assert app.mode.is_empty()
+
+
+def test_main_refuses_system_folders(tmp_path, capsys):
+    import main
+    assert main.main(["--project", Path(tmp_path).anchor]) == 1
+    assert "root of a disk" in capsys.readouterr().out
