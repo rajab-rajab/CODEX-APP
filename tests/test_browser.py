@@ -87,7 +87,8 @@ def test_what_counts_as_risky(label, risky):
 def test_server_config(tmp_path):
     cfg = browser.server_config(tmp_path, "chrome", headless=True)
     assert cfg["command"] == sys.executable and cfg["args"][0].endswith("browser_mcp.py")
-    assert cfg["args"][1:] == ["--channel", "chrome", "--confirm-dir", str(tmp_path), "--headless"]
+    assert cfg["args"][1:5] == ["--channel", "chrome", "--confirm-dir", str(tmp_path)]
+    assert cfg["args"][5] == "--log-file" and cfg["args"][6].endswith("browser-log.jsonl") and "--headless" in cfg["args"]
     assert cfg["default_tools_approval_mode"] == "approve"  # else the engine refuses every click under deny_all
 
 

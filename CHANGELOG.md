@@ -2,6 +2,20 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Misuse protection for the browser**, whatever the user says or approves:
+  - attack strings (SQL, script, command, template and Log4Shell-style injection, path traversal; also
+    URL-encoded) are refused in typed text and addresses, while ordinary text and code still work;
+  - private, link-local and cloud-metadata addresses are blocked for every request a page makes,
+    redirects included (localhost stays allowed; `CODEX_APP_BROWSER_PRIVATE=yes` allows them);
+  - rate limits stop brute force and floods; pages with a CAPTCHA are never clicked or typed into;
+  - `CODEX_APP_BROWSER_SITES` limits the browser to listed sites;
+  - every action and refusal goes into a misuse log (never what was typed); `/browser log` shows it;
+  - Codex is told never to attack, scan or test the security of any site.
+- Fixed: a public page could redirect the browser to a private address, because Playwright doesn't route
+  the target of a redirect. The browser now checks where every redirect points before following it.
+
 ## 1.9.0 (2026-11-25)
 
 - **Built-in browser** (`--browser`, `/browser on`): Codex can visit websites and act on them when you

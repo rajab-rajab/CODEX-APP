@@ -65,8 +65,9 @@ HELP = """Commands (most are the same as official Codex's):
   /skills                 list the skills Codex can use; write $name in a message to use one
   /mcp                    list the MCP servers (external tools) Codex is set up with
   /secrets [on|off]       list secret files in the project; turn the secret guard on or off
-  /browser [on|off]       Codex App's private browser: Codex can visit websites and act on them
-                          when you ask (risky clicks wait for your yes; starts a new conversation)
+  /browser [on|off|log]   Codex App's private browser: Codex can visit websites and act on them
+                          when you ask (risky clicks wait for your yes; starts a new conversation);
+                          log shows its recent actions, refused ones marked
   /compact                summarise the conversation so far, to free up context
   /init                   write an AGENTS.md that describes this project
   /models                 list the models Codex can use
@@ -717,8 +718,9 @@ class App:
             return False
         if self.settings.browser_server is None:
             folder = browser.new_confirm_dir()
-            self.settings.browser_server = browser.server_config(folder, self.settings.browser_channel,
-                                                                 self.settings.browser_headless)
+            self.settings.browser_server = browser.server_config(
+                folder, self.settings.browser_channel, self.settings.browser_headless, self.settings.browser_sites,
+                self.settings.browser_private)
             self.browser_watcher = browser.ConfirmWatcher(
                 folder, ask=self.ask, notice=lambda text: self.screen.event("app", "notice", text)).start()
         self.settings.browser = True
@@ -739,9 +741,33 @@ class App:
             self.save()
             self.new_conversation(self.mode.name)
             print("The browser is off, in a new conversation (the old one is saved; /resume brings it back).")
+        elif arg == "log":
+            self.browser_log()
         else:
-            print(f"The browser is {'on' if self.settings.browser else 'off'}. /browser on or /browser off "
+            s = self.settings
+            print(f"The browser is {'on' if s.browser else 'off'}. /browser on or /browser off "
                   "(each starts a new conversation). /save remembers it for this project.")
+            print(f"Misuse protection: attack input, internal networks"
+                  f"{' (allowed: CODEX_APP_BROWSER_PRIVATE)' if s.browser_private else ''}, automated runs and "
+                  f"CAPTCHAs are blocked{'; only these sites open: ' + s.browser_sites if s.browser_sites else ''}. "
+                  f"Every action is logged (/browser log).")
+
+    def browser_log(self, count: int = 20) -> None:
+        """/browser log: the last browser actions, refused ones marked."""
+        try:
+            lines = browser.log_file().read_text(encoding="utf-8").splitlines()[-count:]
+        except OSError:
+            print("The browser hasn't done anything yet.")
+            return
+        print(f"Last browser actions ({browser.log_file()}):")
+        for line in lines:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            mark = f"{RED}REFUSED{RESET} " if e.get("refused") else ""
+            print(f"  {e.get('time', '')}  {mark}{e.get('action', '')} {e.get('site', '')} {e.get('detail', '')}"
+                  + (f" - {e['refused'][:100]}" if e.get("refused") else ""))
 
     def secrets(self, arg: str) -> None:
         if arg in ("on", "off"):
