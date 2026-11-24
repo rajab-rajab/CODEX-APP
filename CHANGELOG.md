@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.2.2 (2026-11-24)
 
 `--approval ask` tested with real tasks on Codex engine 0.172.0, and fixed.
 
