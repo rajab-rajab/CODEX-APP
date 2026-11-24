@@ -127,6 +127,8 @@ The command-line options follow official Codex where they can:
 | `--image`, `-i` | Attach an image (more than once for several) |
 | `--search` | Let Codex search the web live |
 | `--config`, `-c` | A Codex setting, `-c key=value`, exactly as in official Codex |
+| `--json` | With a task: print the result as JSON for scripts (see "Automation") |
+| `--selftest [--offline]` | Check the Codex engine still has everything this app uses |
 | `--continue` | Carry on with the last conversation |
 
 `-c` now means `--config`, as in official Codex. In 1.1.1 and earlier it was short for `--continue`.
@@ -154,6 +156,9 @@ Most of these are the same as official Codex's.
 | `/commit [message]` | Commit the changes. Codex writes the message from the diff unless you give one; you approve or edit it. Secret files are never committed |
 | `/pr [title]` | Push the work to a branch and open a pull request on GitHub (needs [gh](https://cli.github.com)); asks first |
 | `/save [show\|clear]` | Remember this project's mode, power, profile, permission and models for the next start |
+| `/export [file]` | Save this conversation (your messages, answers, commands with output, diffs) as a Markdown file |
+| `/prices [model in cached out \| model off]` | Set what a model costs, in dollars per million tokens |
+| `/stats [days\|all]` | Tokens and cost per day and per project (default: the last 7 days) |
 | `/review [what]` | Codex's own code review, as in official Codex, read-only and in its own conversation: `uncommitted` (default), `branch <base>`, `commit <sha>`, or your own instructions. The engine doesn't report a review's tokens, so `/usage` shows 0 for the reviewer |
 | `/history [number]` | Codex's conversations for this project from every Codex client (this app, the official Codex CLI, VS Code ...); a number carries on with one |
 | `/mention <file>`, or `@path` in a message | Attach a file to your message |
@@ -324,8 +329,44 @@ Models can also be set with `--model`, `--planner-model` and `--worker-model`.
 
 ## Cost
 
-With an API key you pay OpenAI per token. `/usage` shows the tokens. To see dollars too, add your
-models' prices to `PRICES` in `codex_app/config.py`. Set a monthly spend limit in your OpenAI account.
+With an API key you pay OpenAI per token. Enter your models' prices once, in dollars per million
+tokens (input, cached input, output; from https://openai.com/api/pricing):
+
+```text
+/prices gpt-6.2-sol 1.25 0.125 10
+```
+
+They are saved in `C:\Users\<you>\.codex-app\prices.json`. From then on `/usage` and the line after each
+task show dollars as well as tokens.
+
+Every task's tokens are added to `.codex-app\usage.jsonl`: when, which project, which mode, and the
+tokens per model, but never your messages. `/stats` sums them up per day and per project for the last
+7 days (`/stats 30`, `/stats all`). It uses today's prices, so it shows a cost for earlier work too once
+you set a price. Set a monthly spend limit in your OpenAI account as well.
+
+## Automation
+
+`--json` runs one task and prints only the result to stdout, as one JSON object; everything else goes
+to stderr. That way scripts, scheduled jobs and CI can drive Codex App:
+
+```bash
+py main.py --project "C:\path\to\project" --json "fix the failing test"
+```
+
+```json
+{"ok": true, "answer": "...", "error": null, "mode": "single", "project": "...",
+ "files_changed": [{"path": "tests/test_app.py", "change": "modified"}],
+ "tokens": {"gpt-6.2-sol": {"input": 44337, "cached": 22100, "output": 87}},
+ "cost_usd": 0.0412, "seconds": 18.9, "app_version": "..."}
+```
+
+The exit code is 0 when the task succeeded and 1 when it didn't. `files_changed` comes from the
+undo snapshot in a git project, and from Codex's diffs without git. `cost_usd` is `null` until the
+model has a price (`/prices`). `--goal` works with `--json` too.
+
+`/export` saves the current conversation as a Markdown file: your messages, Codex's answers, every
+command with the end of its output, and every file change with its diff. Without a file name it goes to
+`.codex-app\exports\`.
 
 ## Updates
 
@@ -382,6 +423,9 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/gitflow.py` | `/commit` and `/pr`: committing and opening pull requests |
 | `codex_app/prefs.py` | Saved preferences per project (`/save`) and the finish signal |
 | `codex_app/selftest.py` | `--selftest`: checks the engine still has everything the app uses |
+| `codex_app/export.py` | `/export`: a conversation as Markdown |
+| `codex_app/costs.py` | `/prices` and `/stats`: model prices and the usage log |
+| `.github/workflows/tests.yml` | The tests on GitHub, on Windows and Linux |
 | `codex_app/engine.py` | Engine requests the SDK has no method for: undoing turns, MCP servers, skills |
 | `codex_app/config.py` | Settings, permissions, prices |
 | `codex_app/sessions.py` | Saving and resuming conversations |
@@ -393,6 +437,10 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 ```bash
 py -m pytest -q
 ```
+
+The tests use a fake Codex: no key is needed and nothing is billed. GitHub runs them on Windows and
+Linux for every pull request and every push to `main` (`.github/workflows/tests.yml`), together with the
+offline part of `--selftest`.
 
 ## License
 

@@ -21,8 +21,9 @@ def _env_bool(name: str, default: bool) -> bool:
     return _env(name, "yes" if default else "no").lower() in ("1", "yes", "true", "on")
 
 
-# Dollars per million tokens: (input, cached input, output). Fill in the models you use from
-# https://openai.com/api/pricing. A model missing here shows token counts only, without a cost.
+# Dollars per million tokens: (input, cached input, output). Set them in the app with /prices (saved in
+# ~/.codex-app/prices.json and loaded into this dict at start; see costs.py). A model without a price
+# shows token counts only, without a cost.
 PRICES: dict = {}
 
 EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")

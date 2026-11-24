@@ -182,9 +182,10 @@ def run(live: bool = True, codex=None) -> list[tuple[str, bool, str]]:
     return results
 
 
-def main(quiet: bool = False) -> int:
+def main(quiet: bool = False, offline: bool = False) -> int:
+    """offline: only the checks that don't start the engine (for CI, where nobody is signed in)."""
     try:
-        results = run()
+        results = run(live=not offline)
     except ImportError as e:
         print(f"The Codex SDK can't be loaded: {e}")
         return 1

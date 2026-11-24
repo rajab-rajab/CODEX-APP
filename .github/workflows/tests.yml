@@ -1,0 +1,45 @@
+# Runs Codex App's tests on Windows and Linux for every pull request and every push to main.
+# The tests use a fake Codex, so no OpenAI key is needed and nothing is billed.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install
+        run: python -m pip install -r requirements.txt
+
+      - name: Git identity for the tests' throwaway repositories
+        run: |
+          git config --global user.name "Codex App tests"
+          git config --global user.email "tests@example.com"
+          git config --global init.defaultBranch main
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Self-test (offline checks)
+        run: python main.py --selftest --offline
