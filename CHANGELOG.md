@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.2.1 (2026-11-24)
 
 Faster to start, and cheaper in dual mode.
 
