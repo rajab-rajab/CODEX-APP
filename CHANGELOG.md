@@ -2,6 +2,23 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+The most powerful Codex App yet. Every new feature was tested with real tasks on Codex engine 0.172.0.
+
+- **Goal mode** (`/goal`, `--goal`, as in official Codex): Codex keeps working on its own, over as many
+  turns as it needs, until the goal is done. `--budget 500k` stops it after about that many tokens.
+- **Team mode** (`--mode team`): the planner splits a task into parts that touch different files, and
+  up to 3 workers (`--team-size`) do them at the same time; the planner then checks everything.
+- **Steering**: type while Codex works to add instructions to what it's doing; `/stop` stops it.
+- **Power presets** (`/power`, `--power`): `high` and `max` switch every role to the most capable model
+  at higher effort; `normal` goes back.
+- **Task profiles** (`/profile`, `--profile`, default `auto`): chat is answered directly at low effort
+  (and in dual/team mode without the worker), maths gets at least high effort and checks its answer,
+  coding works as before.
+- **Structured verdicts**: in dual and team mode the planner's verdict comes as structured output, so it
+  can't be missed or misread. It falls back to text if an engine or model can't do that.
+
 ## 1.2.2 (2026-11-24)
 
 `--approval ask` tested with real tasks on Codex engine 0.172.0, and fixed.

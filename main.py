@@ -9,13 +9,16 @@ Type /help while it runs for the list of commands.
 """
 
 import argparse
+import copy
 import os
+import queue
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
-from codex_app import __version__, approvals, protect, sessions, updater
+from codex_app import __version__, approvals, profiles, protect, sessions, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
 from codex_app.modes import INIT_TASK, MODES, make_reviewer, project_instructions, review_task
@@ -26,9 +29,14 @@ IMAGE_TYPES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 DIFF_LINES_SHOWN = 80
 
 HELP = """Commands (most are the same as official Codex's):
-  /mode single | dual     A) one model does everything, B) planner + worker
+  /mode single|dual|team  A) one model does everything, B) planner + worker,
+                          C) planner + several workers at the same time
+  /goal [--budget N] <goal>  Codex works on its own, over many turns, until the goal is done
+                          (optionally stopping after about N tokens, for example --budget 500k)
+  /power normal|high|max  stronger models and more reasoning for every role
+  /profile auto|coding|chat|maths  how messages are handled (auto: chosen for each message)
   /model [name [effort]]  show or switch the model and reasoning effort
-                          (dual mode: /model planner|worker <name> [effort])
+                          (dual/team mode: /model planner|worker <name> [effort])
   /permission <mode>      plan | workspace | full  (official names work too: read-only,
                           workspace-write, danger-full-access)
   /approval <mode>        deny_all | auto_review | ask  (what happens when Codex wants to leave
@@ -52,7 +60,8 @@ HELP = """Commands (most are the same as official Codex's):
   /update                 install the newest Codex App from GitHub (and say if the engine has one)
   /version                show the app and Codex engine versions, and check for newer ones
   /exit, /quit            quit
-Ctrl+C stops the current task."""
+While Codex works, type a message to steer it (added to what it's doing), or /stop to stop it.
+Ctrl+C stops the current task too."""
 
 
 def colour_diff(diff: str, limit: int = DIFF_LINES_SHOWN) -> str:
@@ -79,13 +88,19 @@ class Screen:
 
     def __init__(self):
         self.streaming_from = None
+        self.lock = threading.RLock()  # team mode: several agents report at the same time
 
     def finish(self):
-        if self.streaming_from:
-            print()
-            self.streaming_from = None
+        with self.lock:
+            if self.streaming_from:
+                print()
+                self.streaming_from = None
 
     def event(self, agent: str, kind: str, text: str) -> None:
+        with self.lock:
+            self._event(agent, kind, text)
+
+    def _event(self, agent: str, kind: str, text: str) -> None:
         if kind == "text":
             if self.streaming_from != agent:
                 self.finish()
@@ -114,6 +129,48 @@ class Screen:
     def ask(self, question: str) -> str:
         self.finish()
         return input(f"{YELLOW}{question}{RESET}")
+
+
+class InputPump:
+    """One thread reads every line you type, so you can type while Codex works (official Codex's
+    steering). While a task runs, a line goes to Codex as extra instructions, or answers an approval
+    question; otherwise it is the next message or command."""
+
+    def __init__(self, app, read=None):
+        self.app, self.read = app, read or (lambda: input())
+        self.lines: queue.Queue = queue.Queue()
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        while True:
+            try:
+                line = self.read()
+            except (EOFError, KeyboardInterrupt, OSError, ValueError):
+                self.lines.put(None)
+                return
+            if not self.app.take_line(line):
+                self.lines.put(line)
+
+    def get(self, prompt: str = ""):
+        """The next line, or None when input has ended. Ctrl+C still works while waiting."""
+        if prompt:
+            print(prompt, end="", flush=True)
+        while True:
+            try:
+                return self.lines.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+
+def parse_budget(text: str):
+    """'500k' -> 500000, '1.5m' -> 1500000, '20000' -> 20000; None if it isn't a number."""
+    text = text.strip().lower().replace(",", "").replace("_", "")
+    scale = {"k": 1_000, "m": 1_000_000}.get(text[-1:], 1)
+    try:
+        value = float(text[:-1] if scale > 1 else text)
+    except ValueError:
+        return None
+    return int(value * scale) if value > 0 else None
 
 
 def print_usage(mode, extra=()) -> None:
@@ -207,8 +264,13 @@ def sign_in(codex) -> bool:
 
 class App:
     def __init__(self, codex, sdk, root, settings: Settings, mode_name: str, approver=None, screen=None,
-                 update_notice=None):
+                 update_notice=None, start_settings=None):
         self.update_notice = update_notice  # an updater.BackgroundNotice started before Codex, or None
+        self.start_settings = start_settings or copy.copy(settings)  # what /power normal goes back to
+        self.pump = None        # an InputPump once the interactive loop runs
+        self._busy = False      # a task or goal is running
+        self._answers = None    # a queue while an approval question waits for its answer
+        self._steer_hint = True
         self.codex = codex
         self.sdk = sdk
         self.root = Path(root)
@@ -223,10 +285,57 @@ class App:
 
     def describe(self) -> str:
         s = self.settings
-        mode = (f"single model mode ({s.single_model}, {s.single_effort})" if self.mode.name == "single"
-                else f"dual mode: planner {s.planner_model} ({s.planner_effort}), "
-                     f"worker {s.worker_model} ({s.worker_effort})")
-        return f"{mode}, permission '{s.permission}', approval '{s.approval}'"
+        if self.mode.name == "single":
+            mode = f"single model mode ({s.single_model}, {s.single_effort})"
+        elif self.mode.name == "dual":
+            mode = f"dual mode: planner {s.planner_model} ({s.planner_effort}), worker {s.worker_model} ({s.worker_effort})"
+        else:
+            mode = (f"team mode: planner {s.planner_model} ({s.planner_effort}), up to {s.team_size} workers "
+                    f"{s.worker_model} ({s.worker_effort})")
+        return (f"{mode}, power '{s.power}', profile '{s.profile}', permission '{s.permission}', "
+                f"approval '{s.approval}'")
+
+    # --- typing while Codex works -------------------------------------------------------------
+
+    def ask(self, question: str) -> str:
+        """Ask the user something (approvals, confirmations), through the input pump when it runs."""
+        self.screen.finish()
+        if self.pump is None:
+            return input(f"{YELLOW}{question}{RESET}")
+        print(f"{YELLOW}{question}{RESET}", end="", flush=True)
+        if threading.current_thread() is threading.main_thread() and not self._busy:
+            line = self.pump.get()
+            return line or ""
+        self._answers = answers = queue.Queue()  # asked from Codex's side while a task runs
+        try:
+            return answers.get(timeout=900)
+        except queue.Empty:
+            return ""
+        finally:
+            self._answers = None
+
+    def take_line(self, line: str) -> bool:
+        """Called by the input pump for every line. True if the line was used here (an answer, or
+        steering while a task runs); False to make it the next message."""
+        if self._answers is not None:
+            self._answers.put(line)
+            return True
+        if not self._busy:
+            return False
+        text = line.strip()
+        if not text:
+            return True
+        if text in ("/stop", "/interrupt"):
+            print(f"{YELLOW}Stopping...{RESET}")
+            self.mode.repair()
+        elif text.startswith("/"):
+            print(f"{YELLOW}Codex is working. Type a message to steer it, or /stop to stop it; "
+                  f"commands wait until it's done.{RESET}")
+        else:
+            names = self.mode.steer(text)
+            print(f"{GREY}  (sent to {', '.join(names)} while it works){RESET}" if names
+                  else f"{YELLOW}Nothing to steer right now; send it again when Codex has finished.{RESET}")
+        return True
 
     def new_conversation(self, mode_name: str) -> None:
         self.mode = MODES[mode_name](self.codex, self.sdk, self.root, self.settings, on_event=self.screen.event)
@@ -260,21 +369,49 @@ class App:
         if left is not None and left <= 15:
             print(f"{YELLOW}  Context is nearly full: /compact frees it up, /new starts fresh.{RESET}")
 
-    def run_task(self, task: str, attachments=()) -> None:
-        self.title = self.title or task[:80]
-        attachments = [*self.pending, *attachments, *mentions_in(task, self.root, self.sdk)]
-        self.pending = []
+    def _run(self, work) -> None:
+        if self.pump is not None and self._steer_hint:
+            print(f"{GREY}  (type to steer Codex while it works, /stop to stop it){RESET}")
+            self._steer_hint = False
+        self._busy = True
         try:
-            self.mode.run(task, attachments) if attachments else self.mode.run(task)
+            work()
         except KeyboardInterrupt:
             self.mode.repair()  # tells Codex to stop the running turn
             print(f"\n{YELLOW}Stopped. You can carry on with a new message.{RESET}")
         except self.sdk.CodexError as e:
             print(f"{RED}Codex error: {e}{RESET}")
         finally:
+            self._busy = False
             self.screen.finish()
             self.save()
         self.status_line()
+
+    def run_task(self, task: str, attachments=()) -> None:
+        self.title = self.title or task[:80]
+        attachments = [*self.pending, *attachments, *mentions_in(task, self.root, self.sdk)]
+        self.pending = []
+        profile = profiles.resolve(self.settings.profile, task)
+        if profile != "coding":
+            print(f"{GREY}  ({profiles.describe(profile)}){RESET}")
+        self._run(lambda: self.mode.run(task, attachments, profile))
+
+    def goal(self, arg: str) -> None:
+        budget = None
+        words = arg.split()
+        if len(words) >= 2 and words[0] == "--budget":
+            budget = parse_budget(words[1])
+            if budget is None:
+                print("Use /goal --budget <tokens> <goal>, for example /goal --budget 500k make all tests pass")
+                return
+            arg = " ".join(words[2:])
+        if not arg.strip():
+            print("Use /goal <what Codex should achieve>, for example /goal make all the tests pass")
+            return
+        self.title = self.title or f"goal: {arg[:74]}"
+        print(f"{GREEN}* Goal set{f' (budget about {budget:,} tokens)' if budget else ''}. Codex works on its own "
+              f"until it's done; type to steer it, /stop to pause it.{RESET}")
+        self._run(lambda: self.mode.run_goal(arg.strip(), budget))
 
     def login(self) -> None:
         handle = self.codex.login_chatgpt_device_code()
@@ -287,9 +424,9 @@ class App:
     def set_model(self, arg: str) -> None:
         words = arg.split()
         role = None
-        if self.mode.name == "dual":
+        if self.mode.name in ("dual", "team"):
             if not words or words[0] not in ("planner", "worker"):
-                print("In dual mode: /model planner <name> [effort]  or  /model worker <name> [effort]")
+                print(f"In {self.mode.name} mode: /model planner <name> [effort]  or  /model worker <name> [effort]")
                 return
             role, words = words[0], words[1:]
         if not words or len(words) > 2:
@@ -308,9 +445,37 @@ class App:
             agent = self.mode.planner
         else:
             s.worker_model, s.worker_effort = model, effort or s.worker_effort
+            for worker in self.mode.workers()[1:]:
+                worker.set_model(model, effort)
             agent = self.mode.worker
         agent.set_model(model, effort)
-        print(f"{agent.name} now uses {agent.model} ({agent.effort}), from the next message on.")
+        print(f"{agent.name if role != 'worker' or self.mode.name != 'team' else 'the workers'} now use"
+              f"{'s' if role != 'worker' or self.mode.name != 'team' else ''} {agent.model} ({agent.effort}), "
+              "from the next message on.")
+
+    def set_power(self, level: str) -> None:
+        if level not in profiles.POWER:
+            print("Use /power normal, /power high or /power max")
+            return
+        s = self.settings
+        profiles.apply_power(s, level, self.start_settings)
+        mode = self.mode
+        if mode.name == "single":
+            mode.agent.set_model(s.single_model, s.single_effort)
+        else:
+            mode.planner.set_model(s.planner_model, s.planner_effort)
+            for worker in mode.workers():
+                worker.set_model(s.worker_model, s.worker_effort)
+        self.reviewer = None
+        print(f"Power is now '{level}': {self.describe()}. It costs more tokens the higher it goes."
+              if level != "normal" else f"Power is back to 'normal': {self.describe()}.")
+
+    def set_profile(self, arg: str) -> None:
+        if arg not in profiles.PROFILES:
+            print("Use /profile auto, coding, chat or maths. auto picks one for each message.")
+            return
+        self.settings.profile = arg
+        print(f"Profile is now '{arg}'" + (": chosen for each message." if arg == "auto" else "."))
 
     def list_models(self) -> None:
         try:
@@ -489,6 +654,14 @@ class App:
                     pass  # the saved title is what /sessions shows
                 self.save()
                 print(f"Renamed to '{arg}'.")
+        elif name == "/goal":
+            self.goal(arg)
+        elif name == "/power":
+            self.set_power(arg)
+        elif name == "/profile":
+            self.set_profile(arg)
+        elif name in ("/stop", "/interrupt"):
+            print("Nothing is running.")
         elif name == "/init":
             self.run_task(INIT_TASK)
         elif name == "/login":
@@ -538,6 +711,8 @@ class App:
               "Type a task, or /help. Write @path to attach a file.")
         if self.settings.update_check and self.update_notice is None:
             self.update_notice = updater.BackgroundNotice(updater.APP_DIR, APP_HOME)
+        if self.pump is None:
+            self.pump = InputPump(self)
         while True:
             # The update check runs in the background; its notice shows at the first prompt after it's done,
             # never in the middle of what you type.
@@ -545,10 +720,13 @@ class App:
             if notice:
                 print(f"{GREEN}* {notice}{RESET}")
             try:
-                line = input(f"\n{CYAN}you>{RESET} ").strip()
-            except (EOFError, KeyboardInterrupt):
+                line = self.pump.get(f"\n{CYAN}you>{RESET} ")
+            except KeyboardInterrupt:
+                line = None
+            if line is None:
                 print()
                 break
+            line = line.strip()
             if not line:
                 continue
             if line.startswith("/"):
@@ -577,11 +755,18 @@ def main(argv=None) -> int:
         os.system("")  # turns on colour codes in older Windows consoles
 
     permission_choices = [*PERMISSIONS, *PERMISSION_ALIASES]
-    parser = argparse.ArgumentParser(description="OpenAI Codex with single and dual (planner + worker) modes.")
+    parser = argparse.ArgumentParser(description="OpenAI Codex with single, dual (planner + worker) and team modes.")
     parser.add_argument("task", nargs="*", help="a task to run once; leave out to chat")
     parser.add_argument("--project", "--cd", "-C", dest="project", default=".",
                         help="the project folder Codex works in (default: here)")
-    parser.add_argument("--mode", choices=MODES, default="single")
+    parser.add_argument("--mode", choices=MODES, default="single",
+                        help="single (default), dual (planner + worker), team (planner + workers side by side)")
+    parser.add_argument("--goal", action="store_true",
+                        help="treat the task as a goal: Codex works on its own until it is done")
+    parser.add_argument("--budget", metavar="TOKENS", help="with --goal: stop after about this many tokens (e.g. 500k)")
+    parser.add_argument("--power", choices=profiles.POWER, help="normal (default), high or max")
+    parser.add_argument("--profile", choices=profiles.PROFILES, help="auto (default), coding, chat or maths")
+    parser.add_argument("--team-size", type=int, help="team mode: how many workers at once (default 3)")
     parser.add_argument("--permission", "--sandbox", "-s", dest="permission", choices=permission_choices,
                         metavar="PERMISSION",
                         help="what Codex may change: plan, workspace (default), full; or read-only, "
@@ -634,10 +819,22 @@ def main(argv=None) -> int:
         settings.permission = args.permission or settings.permission
         settings.approval = args.approval or settings.approval
         settings.web_search = args.search or settings.web_search
+        settings.profile = args.profile or settings.profile
+        settings.team_size = args.team_size or settings.team_size
         settings.check()
+        start_settings = copy.copy(settings)
+        power = args.power or settings.power
+        if power != "normal":
+            profiles.apply_power(settings, power, start_settings)
     except ValueError as e:
         print(f"{RED}{e}{RESET}")
         return 1
+    budget = None
+    if args.budget:
+        budget = parse_budget(args.budget)
+        if budget is None:
+            print(f"{RED}--budget needs a number of tokens, for example 500k{RESET}")
+            return 1
     screen = Screen()
     if settings.permission == "full" and not confirm_full(screen.ask):
         return 1
@@ -670,13 +867,19 @@ def main(argv=None) -> int:
         if not sign_in(codex) and args.task:
             return 1
         app = App(codex, sdk, root, settings, args.mode, approver=approver, screen=screen,
-                  update_notice=update_notice)
+                  update_notice=update_notice, start_settings=start_settings)
+        approver.ask_user = app.ask  # approval questions go through the input pump once it runs
         if args.resume:
             last = sessions.latest_for_project(root)
             if last:
                 app.resume(*last)
             else:
                 print("No saved conversation for this project yet; starting a new one.")
+        if args.task and args.goal:
+            app.pending = images
+            app.goal(f"--budget {budget} {' '.join(args.task)}" if budget else " ".join(args.task))
+            print_usage(app.mode, app.extra_usage())
+            return 0
         if args.task:
             app.run_task(" ".join(args.task), images)
             print_usage(app.mode, app.extra_usage())

@@ -73,6 +73,11 @@ class Settings:
     update_check: bool = True      # look for a new app version once a day at start
     web_search: bool = False       # let Codex search the web live (official Codex: --search)
 
+    profile: str = "auto"          # auto | coding | chat | maths (see profiles.py)
+    power: str = "normal"          # normal | high | max (see profiles.py)
+    team_size: int = 3             # team mode: how many workers may work at the same time
+    structured_verdicts: bool = True  # dual/team: the planner's verdict as structured output, not text
+
     @classmethod
     def from_env(cls) -> "Settings":
         s = cls()
@@ -87,6 +92,9 @@ class Settings:
         s.max_review_rounds = _env_int("CODEX_APP_MAX_REVIEW_ROUNDS", s.max_review_rounds)
         s.update_check = _env_bool("CODEX_APP_UPDATE_CHECK", s.update_check)
         s.web_search = _env_bool("CODEX_APP_SEARCH", s.web_search)
+        s.profile = _env("CODEX_APP_PROFILE", s.profile)
+        s.power = _env("CODEX_APP_POWER", s.power)
+        s.team_size = _env_int("CODEX_APP_TEAM_SIZE", s.team_size)
         s.check()
         return s
 
@@ -103,3 +111,8 @@ class Settings:
             raise ValueError(f"permission must be one of {', '.join(PERMISSIONS)}, not '{self.permission}'")
         if self.approval not in APPROVALS:
             raise ValueError(f"approval must be one of {', '.join(APPROVALS)}, not '{self.approval}'")
+        if self.profile not in ("auto", "coding", "chat", "maths"):
+            raise ValueError(f"profile must be auto, coding, chat or maths, not '{self.profile}'")
+        if self.power not in ("normal", "high", "max"):
+            raise ValueError(f"power must be normal, high or max, not '{self.power}'")
+        self.team_size = max(1, min(8, self.team_size))
