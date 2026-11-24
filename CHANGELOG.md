@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.5.0 (2026-11-24)
 
 More reliable, and the work goes straight to git.
 
