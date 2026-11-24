@@ -128,8 +128,9 @@ def print_usage(mode, extra=()) -> None:
 
 def print_versions() -> None:
     print(f"Codex App {__version__}, Codex engine {updater.engine_version() or 'not installed'}")
-    print(updater.check().message)
-    print(updater.engine_check().message)
+    app, engine = updater.check_both()  # GitHub and PyPI at the same time
+    print(app.message if app else "Could not check GitHub for a new app version.")
+    print(engine.message if engine else "Could not check PyPI for a new Codex engine.")
 
 
 def git_changes(root: Path) -> str:
@@ -205,7 +206,9 @@ def sign_in(codex) -> bool:
 
 
 class App:
-    def __init__(self, codex, sdk, root, settings: Settings, mode_name: str, approver=None, screen=None):
+    def __init__(self, codex, sdk, root, settings: Settings, mode_name: str, approver=None, screen=None,
+                 update_notice=None):
+        self.update_notice = update_notice  # an updater.BackgroundNotice started before Codex, or None
         self.codex = codex
         self.sdk = sdk
         self.root = Path(root)
@@ -533,11 +536,14 @@ class App:
         print(f"Codex App {__version__}, {self.describe()}\nProject: {self.root}"
               f"{f' (Codex reads {name})' if name else ' (no AGENTS.md yet: /init writes one)'}\n"
               "Type a task, or /help. Write @path to attach a file.")
-        if self.settings.update_check:
-            notice = updater.due_notice(updater.APP_DIR, APP_HOME)
+        if self.settings.update_check and self.update_notice is None:
+            self.update_notice = updater.BackgroundNotice(updater.APP_DIR, APP_HOME)
+        while True:
+            # The update check runs in the background; its notice shows at the first prompt after it's done,
+            # never in the middle of what you type.
+            notice = self.update_notice.take() if self.update_notice else None
             if notice:
                 print(f"{GREEN}* {notice}{RESET}")
-        while True:
             try:
                 line = input(f"\n{CYAN}you>{RESET} ").strip()
             except (EOFError, KeyboardInterrupt):
@@ -551,6 +557,9 @@ class App:
             else:
                 self.run_task(line)
         self.save()
+        notice = self.update_notice.take() if self.update_notice else None
+        if notice:
+            print(f"{GREEN}* {notice}{RESET}")
         print_usage(self.mode, self.extra_usage())
 
 
@@ -603,12 +612,6 @@ def main(argv=None) -> int:
         print(message)
         return 1 if failed else 0
 
-    try:
-        import openai_codex as sdk
-    except ImportError:
-        print("OpenAI's Codex SDK is not installed. Run:  py -m pip install -r requirements.txt")
-        return 1
-
     root = Path(args.project).resolve()
     if not root.is_dir():
         print(f"{RED}project folder not found: {root}{RESET}")
@@ -635,6 +638,19 @@ def main(argv=None) -> int:
     except ValueError as e:
         print(f"{RED}{e}{RESET}")
         return 1
+    screen = Screen()
+    if settings.permission == "full" and not confirm_full(screen.ask):
+        return 1
+
+    # Loading the Codex SDK takes a few seconds, so the daily update check (GitHub and PyPI) starts first
+    # and runs alongside it. Its notice shows at the first prompt once it is ready.
+    update_notice = (updater.BackgroundNotice(updater.APP_DIR, APP_HOME)
+                     if settings.update_check and not args.task else None)
+    try:
+        import openai_codex as sdk
+    except ImportError:
+        print("OpenAI's Codex SDK is not installed. Run:  py -m pip install -r requirements.txt")
+        return 1
     images = []
     for image in args.image:
         item = attachment_for(image, root, sdk, image=True)
@@ -642,9 +658,6 @@ def main(argv=None) -> int:
             print(f"{RED}image not found: {image}{RESET}")
             return 1
         images.append(item)
-    screen = Screen()
-    if settings.permission == "full" and not confirm_full(screen.ask):
-        return 1
 
     codex_config = sdk.CodexConfig(config_overrides=tuple(args.config)) if args.config else None
     with sdk.Codex(config=codex_config) as codex:
@@ -656,7 +669,8 @@ def main(argv=None) -> int:
             settings.approval = "deny_all"
         if not sign_in(codex) and args.task:
             return 1
-        app = App(codex, sdk, root, settings, args.mode, approver=approver, screen=screen)
+        app = App(codex, sdk, root, settings, args.mode, approver=approver, screen=screen,
+                  update_notice=update_notice)
         if args.resume:
             last = sessions.latest_for_project(root)
             if last:

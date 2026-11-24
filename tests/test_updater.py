@@ -230,3 +230,70 @@ def test_daily_notice_offline_checks_again_next_start(tmp_path):
     home = tmp_path / "home"
     assert updater.due_notice(tmp_path, home, now=1_000_000, engine=offline) is None
     assert not (home / "update-check.json").exists()  # not stamped, so the next start tries again
+
+
+# --- not waiting for the update checks ------------------------------------------------------------
+
+def test_check_both_runs_the_two_checks_at_the_same_time(tmp_path, monkeypatch):
+    import time
+
+    def slow_app(app_dir, timeout=30):
+        time.sleep(0.6)
+        return updater.UpdateStatus(True, "Codex App is up to date.")
+
+    def slow_engine():
+        time.sleep(0.6)
+        return updater.EngineStatus(True, "up to date", "0.171.0", "0.171.0")
+    monkeypatch.setattr(updater, "check", slow_app)
+    started = time.monotonic()
+    app, engine = updater.check_both(tmp_path, slow_engine)
+    assert time.monotonic() - started < 1.1  # about 0.6 s, not 1.2 s
+    assert app.ok and engine.ok
+
+
+def test_check_both_turns_a_crash_into_none(tmp_path, monkeypatch):
+    def broken(*a, **kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(updater, "check", broken)
+    assert updater.check_both(tmp_path, broken) == (None, None)
+
+
+def test_background_notice_does_not_block_and_is_shown_once(tmp_path, monkeypatch):
+    import threading
+    release = threading.Event()
+
+    def slow_gather(app_dir, engine=None):
+        release.wait(5)
+        return "Update available.", True
+    monkeypatch.setattr(updater, "gather_notice", slow_gather)
+    home = tmp_path / "home"
+    notice = updater.BackgroundNotice(tmp_path, home, now=1_000_000)
+    assert notice.take() is None  # still checking: the app carries on
+    assert updater.check_is_due(home, 1_000_000)  # nothing recorded while it runs
+    release.set()
+    assert notice.take(wait=5) == "Update available."
+    assert notice.take(wait=1) is None  # shown once only
+    assert not updater.check_is_due(home, 1_000_000 + 3600)  # recorded once shown
+    assert updater.BackgroundNotice(tmp_path, home, now=1_000_000 + 3600).take(wait=1) is None  # not again today
+
+
+def test_background_notice_quitting_early_loses_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater, "gather_notice", lambda app_dir, engine=None: ("Update available.", True))
+    home = tmp_path / "home"
+    notice = updater.BackgroundNotice(tmp_path, home, now=1_000_000)
+    notice._done.wait(5)  # the check finished, but the user quit before the next prompt
+    assert updater.check_is_due(home, 1_000_000 + 3600)  # so the next start checks again
+
+
+def test_background_notice_offline_is_not_recorded(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater, "gather_notice", lambda app_dir, engine=None: (None, False))
+    home = tmp_path / "home"
+    assert updater.BackgroundNotice(tmp_path, home, now=1_000_000).take(wait=5) is None
+    assert updater.check_is_due(home, 1_000_000 + 60)
+
+
+def test_background_notice_survives_a_crash(tmp_path, monkeypatch):
+    def broken(app_dir, engine=None):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(updater, "gather_notice", broken)
+    assert updater.BackgroundNotice(tmp_path, tmp_path / "home").take(wait=5) is None

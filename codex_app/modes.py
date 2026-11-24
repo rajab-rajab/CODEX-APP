@@ -57,7 +57,9 @@ When you get a TASK:
   and end with the line: PLAN: NONE
 
 When you get the WORKER'S REPORT:
-- Check the actual files yourself, and run the tests if the project has them.
+- It comes with THE WORKER'S CHANGES: the exact diff Codex recorded. Review that diff rather than
+  re-reading whole files; open a file only where you need more context, or when the diff was cut short.
+- Run the tests if the project has them.
 - End with exactly one of these lines:
   VERDICT: APPROVED
   VERDICT: CHANGES_NEEDED
@@ -214,6 +216,21 @@ _VERDICT = re.compile(r"VERDICT:\s*(APPROVED|CHANGES_NEEDED)", re.IGNORECASE)
 _NO_PLAN = re.compile(r"^\s*PLAN:\s*NONE\s*$", re.IGNORECASE | re.MULTILINE)
 
 
+REVIEW_DIFF_LIMIT = 40_000  # characters of the worker's diff given to the planner (about 10,000 tokens)
+
+
+def changes_for_review(diff: str, limit: int = REVIEW_DIFF_LIMIT) -> str:
+    """The worker's diff for the planner, so it can check the changes without re-reading every file."""
+    diff = (diff or "").strip()
+    if not diff:
+        return "THE WORKER'S CHANGES: Codex recorded no file changes in this turn."
+    if len(diff) > limit:
+        cut = diff[:limit].rsplit("\n", 1)[0]
+        return (f"THE WORKER'S CHANGES (cut short at {limit:,} of {len(diff):,} characters; read the files for "
+                f"the rest):\n```diff\n{cut}\n```")
+    return f"THE WORKER'S CHANGES:\n```diff\n{diff}\n```"
+
+
 def parse_verdict(review: str):
     """'APPROVED', 'CHANGES_NEEDED', or None if the planner gave no verdict line."""
     found = _VERDICT.findall(review or "")
@@ -261,7 +278,8 @@ class DualMode(_Mode):
                                                        attachments if round_number == 0 else ()))
 
             self._notice("Planner is checking the work.")
-            review = self.planner.send(f"WORKER'S REPORT:\n{report}\n\nCheck the work and give your verdict.")
+            review = self.planner.send(f"WORKER'S REPORT:\n{report}\n\n{changes_for_review(self.worker.last_diff)}"
+                                       "\n\nCheck the work and give your verdict.")
             verdict = parse_verdict(review)
             if verdict == "APPROVED":
                 self._notice("Planner approved the work.")

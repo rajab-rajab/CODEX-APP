@@ -2,6 +2,18 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+Faster to start, and cheaper in dual mode.
+
+- The daily update check runs in the background while Codex starts, with GitHub and PyPI asked at the
+  same time. Starting no longer waits for it (before, a start with the check due took about 10 s; now
+  about 4 s, the same as any start), and quitting never waits for it either. Its notice shows at the
+  first prompt after it's ready. If you quit before it finishes, the next start checks again.
+- `--version` and `/version` ask GitHub and PyPI at the same time (about 2 s instead of 4 s).
+- Dual mode: the planner gets the worker's exact diff with its report, so it reviews the changes
+  instead of re-reading whole files, which saves tokens on every review round.
+
 ## 1.2.0 (2026-11-24)
 
 Closer to official Codex, and safer for the system disk.
