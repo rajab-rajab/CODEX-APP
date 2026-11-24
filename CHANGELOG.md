@@ -2,6 +2,17 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Fixed (safety)**: computer use, browsers and account plugins are now off in Codex App by default.
+  Codex App shares the Codex engine's settings with the official Codex apps, so plugins they installed
+  (computer use, browser, Chrome, Slack, Google Calendar ...) also reached Codex App's conversations.
+  Those tools work outside the sandbox, beyond `workspace` permission, the secret guard and the
+  system-folder protection, and the computer-use tool is marked read-only, so approvals don't stop it.
+  The app now starts the engine with them switched off for its own conversations (your Codex settings
+  aren't changed) and lists what it switched off; `--outside-tools` turns them on. The desktop app's
+  computer-use hook no longer runs after Codex App's turns.
+
 ## 1.8.0 (2026-11-25)
 
 New engines are tested before you get them, and every update says what's new.

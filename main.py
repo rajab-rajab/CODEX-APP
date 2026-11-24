@@ -21,8 +21,8 @@ import threading
 import time
 from pathlib import Path
 
-from codex_app import __version__, approvals, costs, engine, export, gitflow, prefs, profiles, protect, sessions, \
-    undo, updater
+from codex_app import __version__, approvals, costs, engine, export, gitflow, outside, prefs, profiles, protect, \
+    sessions, undo, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
 from codex_app.modes import INIT_TASK, MODES, make_reviewer, make_writer, project_instructions, review_task, \
@@ -896,6 +896,7 @@ class App:
         print(f"  Sandbox:     {PERMISSIONS[s.permission]}")
         print(f"  Approval:    {APPROVALS[s.approval]}")
         print(f"  Web search:  {'live' if s.web_search else 'off'}")
+        print(f"  Outside tools: {'on (computer use, browsers, account plugins)' if s.outside_tools else 'off (--outside-tools turns on computer use, browsers, account plugins)'}")
         print(f"  Account:     {account_text}")
         limits = self.check_limits(after_task=False)
         if limits:
@@ -1324,6 +1325,31 @@ class App:
         print_usage(self.mode, self.extra_usage())
 
 
+def start_codex(sdk, settings, user_overrides: tuple = ()):
+    """Start the Codex engine. Unless outside tools are allowed, plugins and servers that work outside the
+    project (computer use, browsers, accounts) are switched off for Codex App's conversations only (see
+    outside.py). Returns (codex, what was switched off). Your own -c settings win over these."""
+    extra, names = ((), []) if settings.outside_tools else outside.overrides()
+    extra = list(extra)
+    while True:
+        overrides = tuple(extra) + tuple(user_overrides)
+        try:
+            return sdk.Codex(config=sdk.CodexConfig(config_overrides=overrides) if overrides else None), names
+        except sdk.CodexError as e:
+            # Switching off a server this PC doesn't have makes the engine refuse to start ("invalid transport
+            # in `mcp_servers.node_repl`"): leave that one out and start again.
+            missing = re.search(r"mcp_servers\.([\w@\-\".]+)`", str(e))
+            if not missing:
+                raise
+            name = missing.group(1).strip('"')
+            remaining = [o for o in extra if not o.startswith(f"mcp_servers.{name}.") and
+                         not o.startswith(f'mcp_servers."{name}".')]
+            if len(remaining) == len(extra):
+                raise
+            extra = remaining
+            names = [n for n in names if n != name]
+
+
 def _value_root(x):
     return getattr(x, "root", x)
 
@@ -1365,6 +1391,9 @@ def main(argv=None) -> int:
     parser.add_argument("--image", "-i", action="append", default=[], metavar="FILE",
                         help="attach an image to the task (can be given more than once)")
     parser.add_argument("--search", action="store_true", help="let Codex search the web live")
+    parser.add_argument("--outside-tools", action="store_true",
+                        help="let Codex use plugins that work outside the project: computer use, browsers, Slack, "
+                             "calendars (off by default)")
     parser.add_argument("--config", "-c", action="append", default=[], metavar="KEY=VALUE",
                         help="a Codex setting, as in official Codex (for example -c model_verbosity=high)")
     parser.add_argument("--update", action="store_true", help="install the newest version from GitHub, then exit")
@@ -1427,6 +1456,7 @@ def main(argv=None) -> int:
         settings.permission = args.permission or settings.permission
         settings.approval = args.approval or settings.approval
         settings.web_search = args.search or settings.web_search
+        settings.outside_tools = args.outside_tools or settings.outside_tools
         settings.profile = args.profile or settings.profile
         settings.team_size = args.team_size or settings.team_size
         settings.check()
@@ -1464,8 +1494,11 @@ def main(argv=None) -> int:
             return 1
         images.append(item)
 
-    codex_config = sdk.CodexConfig(config_overrides=tuple(args.config)) if args.config else None
-    with sdk.Codex(config=codex_config) as codex:
+    codex, turned_off = start_codex(sdk, settings, tuple(args.config))
+    if turned_off:
+        print(f"{GREY}Off for Codex App, because they work outside the project: {', '.join(turned_off)} "
+              f"(--outside-tools turns them on).{RESET}")
+    with codex:
         approver = approvals.Approver(ask=settings.approval == approvals.ASK, ask_user=screen.ask,
                                       notice=lambda text: screen.event("app", "notice", text))
         if not approvals.install(codex, approver) and settings.approval == approvals.ASK:
