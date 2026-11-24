@@ -245,3 +245,11 @@ def test_app_commands(tmp_path, capsys):
     assert sessions.latest_for_project(tmp_path) is not None
     assert app.command("/exit") is False
     assert "read only" in capsys.readouterr().out
+
+
+def test_only_agents_md_counts_as_read_by_codex(tmp_path):
+    from codex_app.modes import project_instructions
+    (tmp_path / "CLAUDE.md").write_text("x", encoding="utf-8")
+    assert project_instructions(tmp_path)[0] == ""
+    (tmp_path / "AGENTS.md").write_text("x", encoding="utf-8")
+    assert project_instructions(tmp_path)[0] == "AGENTS.md"
