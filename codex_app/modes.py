@@ -163,7 +163,7 @@ def make_writer(codex, sdk, workspace_root: Path, settings: Settings, model: str
     """A separate read-only Codex thread that writes commit messages and pull request descriptions."""
     return _agent(codex, sdk, settings, name="writer", model=model, effort="low", sandbox=sdk.Sandbox.read_only,
                   instructions=WRITER_INSTRUCTIONS.format(rules=_SHARED_RULES), cwd=workspace_root,
-                  on_event=on_event)
+                  on_event=on_event, ephemeral=True)
 
 
 def write_message(writer: CodexAgent, what: str, text: str) -> tuple[str, str]:
@@ -183,7 +183,7 @@ def make_reviewer(codex, sdk, workspace_root: Path, settings: Settings, model: s
     """A separate read-only Codex thread for /review, so a review never changes files."""
     return _agent(codex, sdk, settings, name="reviewer", model=model, effort="high", sandbox=sdk.Sandbox.read_only,
                   instructions=REVIEW_INSTRUCTIONS.format(rules=_SHARED_RULES), cwd=workspace_root,
-                  on_event=on_event)
+                  on_event=on_event, ephemeral=True)
 
 
 def with_attachments(sdk, text: str, attachments=()):

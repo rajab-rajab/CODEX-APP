@@ -227,10 +227,16 @@ def engine_check(app_dir: Path = APP_DIR, releases: Optional[Callable[[], dict]]
 
 
 def _engine_starts() -> bool:
-    """Start the installed Codex engine once in a separate process, to check it works."""
-    probe = "import openai_codex as s\nwith s.Codex() as c:\n    c.metadata\n"
+    """Check the newly installed Codex engine in a separate process: the app's self-test (selftest.py),
+    which tries everything the app uses without a model turn. Without the app's main.py (an unusual
+    install), only that the engine starts."""
+    main = APP_DIR / "main.py"
+    if main.is_file():
+        cmd = [sys.executable, str(main), "--selftest", "--quiet"]
+    else:
+        cmd = [sys.executable, "-c", "import openai_codex as s\nwith s.Codex() as c:\n    c.metadata\n"]
     try:
-        return subprocess.run([sys.executable, "-c", probe], capture_output=True, timeout=120,
+        return subprocess.run(cmd, capture_output=True, timeout=300, cwd=str(APP_DIR),
                               stdin=subprocess.DEVNULL).returncode == 0
     except subprocess.TimeoutExpired:
         return False
@@ -238,7 +244,8 @@ def _engine_starts() -> bool:
 
 def engine_apply(app_dir: Path = APP_DIR, status: Optional[EngineStatus] = None,
                  run: Callable = subprocess.run, starts: Callable[[], bool] = _engine_starts) -> tuple[bool, str]:
-    """Install the newest accepted Codex engine. Goes back to the old one if the new one doesn't start.
+    """Install the newest accepted Codex engine. Goes back to the old one if the new one doesn't pass the
+    app's self-test (`starts`).
     Run this while Codex is NOT running (the app does it in --update, before starting Codex)."""
     status = status or engine_check(app_dir)
     if not status.ok or not status.available:
@@ -252,9 +259,9 @@ def engine_apply(app_dir: Path = APP_DIR, status: Optional[EngineStatus] = None,
         return True, f"Updated the Codex engine {status.current} -> {status.latest}."
     if status.current:
         run(pip + [f"{ENGINE_PACKAGE}=={status.current}"], capture_output=True, text=True)
-        return False, (f"Codex engine {status.latest} did not start, so version {status.current} was "
-                       "put back. Nothing changed.")
-    return False, f"Codex engine {status.latest} was installed but did not start."
+        return False, (f"Codex engine {status.latest} did not pass the self-test (it didn't start, or something "
+                       f"Codex App uses changed), so version {status.current} was put back. Nothing changed.")
+    return False, f"Codex engine {status.latest} was installed but did not pass the self-test (py main.py --selftest)."
 
 
 def update_everything(app_dir: Path = APP_DIR, engine_releases: Optional[Callable[[], dict]] = None,

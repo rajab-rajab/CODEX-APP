@@ -81,6 +81,8 @@ class Settings:
     notify: bool = True            # beep and show a notification when a task took notify_after seconds or more
     notify_after: int = 30
     retries: int = 3               # automatic retries when OpenAI is busy (0 turns them off)
+    auto_compact: bool = True      # compact the conversation by itself when little context is left
+    auto_compact_at: int = 10      # ... at this percent of context left or less
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -103,6 +105,8 @@ class Settings:
         s.notify = _env_bool("CODEX_APP_NOTIFY", s.notify)
         s.notify_after = _env_int("CODEX_APP_NOTIFY_AFTER", s.notify_after)
         s.retries = _env_int("CODEX_APP_RETRIES", s.retries)
+        s.auto_compact = _env_bool("CODEX_APP_AUTO_COMPACT", s.auto_compact)
+        s.auto_compact_at = _env_int("CODEX_APP_AUTO_COMPACT_AT", s.auto_compact_at)
         s.check()
         return s
 

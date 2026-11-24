@@ -144,6 +144,7 @@ Most of these are the same as official Codex's.
 | `/power normal\|high\|max` | Stronger models and more reasoning for every role |
 | `/profile auto\|coding\|chat\|maths` | How messages are handled |
 | `/stop` | While Codex works: stop it (typing anything else steers it) |
+| `/queue <task>` | Line up the next task while Codex works; it starts when the current one ends. `/queue` lists them, `/queue clear` empties the queue |
 | `/model [name [effort]]` | Show or switch the model and reasoning effort, from the next message on. Dual and team mode: `/model planner <name>` or `/model worker <name>` |
 | `/permission <mode>` (or `/permissions`) | What Codex may change (see below) |
 | `/approval <mode>` (or `/approvals`) | What happens when Codex wants to leave the sandbox (see below) |
@@ -153,7 +154,8 @@ Most of these are the same as official Codex's.
 | `/commit [message]` | Commit the changes. Codex writes the message from the diff unless you give one; you approve or edit it. Secret files are never committed |
 | `/pr [title]` | Push the work to a branch and open a pull request on GitHub (needs [gh](https://cli.github.com)); asks first |
 | `/save [show\|clear]` | Remember this project's mode, power, profile, permission and models for the next start |
-| `/review [what]` | A read-only code review in its own conversation: `uncommitted` (default), `branch <base>`, `commit <sha>`, or your own instructions |
+| `/review [what]` | Codex's own code review, as in official Codex, read-only and in its own conversation: `uncommitted` (default), `branch <base>`, `commit <sha>`, or your own instructions. The engine doesn't report a review's tokens, so `/usage` shows 0 for the reviewer |
+| `/history [number]` | Codex's conversations for this project from every Codex client (this app, the official Codex CLI, VS Code ...); a number carries on with one |
 | `/mention <file>`, or `@path` in a message | Attach a file to your message |
 | `/image <file>` | Attach an image to your next message |
 | `/skills`, or `$name` in a message | List the skills Codex can use; `$name` attaches one to your message |
@@ -234,6 +236,16 @@ project with real secrets the safest place for them is still outside the project
 
 ## Reliability
 
+- **Engine-update safety check.** `py main.py --selftest` checks, in a few seconds and without a model
+  turn (nothing billed), that the installed Codex engine still has everything this app uses, including
+  the parts that go beyond the SDK's public interface ("ask" mode, goals, `/undo`, structured output,
+  `/review`, `/history`, MCP, skills, limits). `py main.py --update` runs it after installing a new
+  engine, and puts the old engine back if anything fails.
+- **Auto-compact.** When only 10% of the context is left after a task, Codex summarises the
+  conversation by itself, so long work doesn't stall (`CODEX_APP_AUTO_COMPACT=no` turns it off,
+  `CODEX_APP_AUTO_COMPACT_AT` sets the percent).
+- **Ctrl+C really stops Codex.** (Before 1.6.0 the app could stop waiting while Codex carried on.)
+
 - **Automatic retries.** When a turn fails because OpenAI's servers are busy or had an internal error,
   the app waits (5, 15, then 45 seconds) and asks Codex to carry on from where it stopped, up to 3 times
   (`CODEX_APP_RETRIES`, 0 turns it off). The message isn't sent again, so finished work isn't repeated.
@@ -303,6 +315,8 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_RETRIES` | `3` | Automatic retries when OpenAI is busy (0 to turn off) |
 | `CODEX_APP_NOTIFY` | `yes` | Beep and show a notification when a long task finishes |
 | `CODEX_APP_NOTIFY_AFTER` | `30` | How many seconds make a task "long" |
+| `CODEX_APP_AUTO_COMPACT` | `yes` | Compact the conversation by itself when little context is left |
+| `CODEX_APP_AUTO_COMPACT_AT` | `10` | ... at this percent of context left or less |
 | `CODEX_APP_MAX_REVIEW_ROUNDS` | `2` | How many times the planner may send work back |
 | `CODEX_APP_UPDATE_CHECK` | `yes` | Look for a new app version once a day at start |
 
@@ -340,8 +354,8 @@ while the app is closed: the engine can't be replaced while Codex is running.
 - `requirements.txt` sets the engine versions this app version works with (`openai-codex>=0.171,<0.200`).
   A future engine that changes its programming interface isn't installed until you widen the range
   after testing it. `--version` tells you when a newer engine exists outside the range.
-- After installing a new engine, the app starts it once to check it works. If it doesn't, the
-  previous version is put back.
+- After installing a new engine, the app runs its self-test on it (`--selftest`: everything the app
+  uses, no model turn, nothing billed). If anything fails, the previous version is put back.
 - An app update is refused while you have uncommitted changes to the app's own files.
 - Your settings, saved conversations and Codex sign-in are never touched.
 
@@ -367,6 +381,7 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/undo.py` | File snapshots and restoring them for `/undo` |
 | `codex_app/gitflow.py` | `/commit` and `/pr`: committing and opening pull requests |
 | `codex_app/prefs.py` | Saved preferences per project (`/save`) and the finish signal |
+| `codex_app/selftest.py` | `--selftest`: checks the engine still has everything the app uses |
 | `codex_app/engine.py` | Engine requests the SDK has no method for: undoing turns, MCP servers, skills |
 | `codex_app/config.py` | Settings, permissions, prices |
 | `codex_app/sessions.py` | Saving and resuming conversations |
