@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.3.0 (2026-11-24)
 
 The most powerful Codex App yet. Every new feature was tested with real tasks on Codex engine 0.172.0.
 
