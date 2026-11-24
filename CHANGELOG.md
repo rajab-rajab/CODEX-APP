@@ -2,6 +2,16 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## 1.1.1 (2026-11-24)
+
+- `py main.py --update` exits with an error when a check couldn't be done or an update didn't work
+  (for example GitHub or PyPI out of reach). Being already up to date is not an error.
+- The daily update check tries again at the next start when it couldn't reach GitHub or PyPI,
+  instead of waiting a day.
+- With no Codex engine installed and no version this app accepts, `--version` says so instead of
+  "up to date".
+- The start message only says "Codex reads" for `AGENTS.md`. Codex doesn't read `CLAUDE.md`.
+
 ## 1.1.0 (2026-11-21)
 
 - The Codex engine updates too: `py main.py --update` installs the newest `openai-codex` that this
