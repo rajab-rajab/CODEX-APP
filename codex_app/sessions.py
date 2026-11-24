@@ -1,8 +1,9 @@
 """Saving and resuming conversations.
 
-Each conversation is a JSON file in ~/.codex-app/sessions/ (change with CODEX_APP_HOME). Files hold
-your messages, the model's replies and tool output, so they can contain code from your project. They
-never contain your API key."""
+Each conversation is a JSON file in ~/.codex-app/sessions/ (change with CODEX_APP_HOME). A file holds
+the project path, a title (the start of your first message), the mode, and for each agent its Codex
+thread ID, model and token counts. The conversation itself is kept by Codex. Files never contain
+your API key."""
 
 import json
 import time

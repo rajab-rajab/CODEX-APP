@@ -190,3 +190,43 @@ def test_daily_notice_mentions_engine(tmp_path):
                                           "0.171.0", "0.185.0")
     notice = updater.due_notice(tmp_path, tmp_path / "home", now=1_000_000, engine=engine)
     assert "0.171.0 -> 0.185.0" in notice and "py main.py --update" in notice
+
+
+def test_engine_not_installed_and_nothing_accepted(app_with_range):
+    status = updater.engine_check(app_with_range, releases("0.200.0"), current="")
+    assert not status.ok and "not installed" in status.message and "0.200.0" in status.message
+    assert "up to date" not in status.message
+
+
+# --- py main.py --update ---------------------------------------------------------------------------
+
+@pytest.fixture
+def engine_installed(monkeypatch):
+    monkeypatch.setattr(updater, "engine_version", lambda: "0.171.0")
+
+
+def test_update_everything_up_to_date_is_not_a_failure(repos, engine_installed):
+    _, installed = repos
+    updated, message, failed = updater.update_everything(installed, releases("0.171.0"), run=FakePip())
+    assert not updated and not failed and "up to date" in message
+
+
+def test_update_everything_reports_a_check_that_could_not_be_done(tmp_path, engine_installed):
+    write_app(tmp_path, "1.0.0", "openai-codex>=0.171,<0.200\n")
+    updated, message, failed = updater.update_everything(tmp_path, releases("0.171.0"), run=FakePip())
+    assert not updated and failed and "isn't a git clone" in message
+
+
+def test_update_everything_reports_an_engine_that_did_not_start(repos, engine_installed):
+    _, installed = repos
+    updated, message, failed = updater.update_everything(
+        installed, lambda: {"0.171.0": [{}], "0.185.0": [{}]}, run=FakePip(), starts=lambda: False)
+    assert failed and "put back" in message
+
+
+def test_daily_notice_offline_checks_again_next_start(tmp_path):
+    def offline():
+        return updater.EngineStatus(False, "Could not reach PyPI", "0.171.0")
+    home = tmp_path / "home"
+    assert updater.due_notice(tmp_path, home, now=1_000_000, engine=offline) is None
+    assert not (home / "update-check.json").exists()  # not stamped, so the next start tries again

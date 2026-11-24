@@ -100,9 +100,10 @@ def check(app_dir: Path = APP_DIR, fetch: bool = True, timeout: int = 30) -> Upd
     return UpdateStatus(True, message, current, latest, behind, ahead, notes)
 
 
-def apply(app_dir: Path = APP_DIR, install_packages: bool = True) -> tuple[bool, str]:
+def apply(app_dir: Path = APP_DIR, install_packages: bool = True,
+          status: Optional[UpdateStatus] = None) -> tuple[bool, str]:
     """Download and install the update. Returns (updated, message for the user)."""
-    status = check(app_dir)
+    status = status or check(app_dir)
     if not status.ok:
         return False, status.message
     if not status.available:
@@ -210,6 +211,10 @@ def engine_check(app_dir: Path = APP_DIR, releases: Optional[Callable[[], dict]]
     newer = bool(latest) and (not current or Version(latest) > Version(current))
     if newer:
         message = f"Codex engine update available: {current or 'not installed'} -> {latest}."
+    elif not current:
+        # Nothing installed and nothing to install: a problem, not "up to date".
+        return EngineStatus(False, f"The Codex engine is not installed, and PyPI has no version this app "
+                                   f"accepts ('{spec}'). Newest on PyPI: {newest}.", current, "", str(newest))
     else:
         message = f"Codex engine {current} is up to date."
         if newest not in accepted and (not current or newest > Version(current)):
@@ -247,12 +252,20 @@ def engine_apply(app_dir: Path = APP_DIR, status: Optional[EngineStatus] = None,
     return False, f"Codex engine {status.latest} was installed but did not start."
 
 
-def update_everything(app_dir: Path = APP_DIR) -> tuple[bool, str]:
-    """What `py main.py --update` does: the app first, then the engine. Returns (anything updated, message)."""
-    app_updated, app_message = apply(app_dir)
+def update_everything(app_dir: Path = APP_DIR, engine_releases: Optional[Callable[[], dict]] = None,
+                      run: Callable = subprocess.run,
+                      starts: Callable[[], bool] = _engine_starts) -> tuple[bool, str, bool]:
+    """What `py main.py --update` does: the app first, then the engine.
+    Returns (anything updated, message, something failed). A part that is already up to date is not a failure;
+    a check that could not be done, or an update that was refused or did not work, is."""
+    app_status = check(app_dir)
+    app_updated, app_message = apply(app_dir, status=app_status)
+    app_failed = not app_updated and (not app_status.ok or app_status.available)
     # After an app update, requirements.txt may accept a newer engine, so the engine is checked afterwards.
-    engine_updated, engine_message = engine_apply(app_dir)
-    return app_updated or engine_updated, f"{app_message}\n{engine_message}"
+    engine_status = engine_check(app_dir, releases=engine_releases)
+    engine_updated, engine_message = engine_apply(app_dir, engine_status, run=run, starts=starts)
+    engine_failed = not engine_updated and (not engine_status.ok or engine_status.available)
+    return app_updated or engine_updated, f"{app_message}\n{engine_message}", app_failed or engine_failed
 
 
 def due_notice(app_dir: Path, home: Path, now: Optional[float] = None,
@@ -266,19 +279,23 @@ def due_notice(app_dir: Path, home: Path, now: Optional[float] = None,
         last = 0
     if now - last < CHECK_EVERY:
         return None
-    lines = []
+    lines, reached = [], False
     try:
         status = check(app_dir, timeout=8)
+        reached = reached or status.ok
         if status.available:
             lines.append(f"{status.message} Type /update to install it.")
     except Exception:
         pass
     try:
         engine_status = (engine or (lambda: engine_check(app_dir, releases=lambda: _pypi_releases(timeout=8))))()
+        reached = reached or engine_status.ok
         if engine_status.available:
             lines.append(f"{engine_status.message} Type /exit, then run: py main.py --update")
     except Exception:
         pass
+    if not reached:
+        return None  # offline (or both checks failed): try again at the next start, not tomorrow
     try:
         home.mkdir(parents=True, exist_ok=True)
         stamp.write_text(json.dumps({"checked": now}), encoding="utf-8")

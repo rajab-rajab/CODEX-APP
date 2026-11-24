@@ -282,10 +282,9 @@ def main(argv=None) -> int:
         return 0
     if args.update:
         # Runs before Codex starts, so the engine can be replaced safely.
-        updated, message = updater.update_everything()
+        _, message, failed = updater.update_everything()
         print(message)
-        failed = any(word in message for word in ("failed", "could not", "did not start", "Not updated"))
-        return 1 if failed and not updated else 0
+        return 1 if failed else 0
 
     try:
         import openai_codex as sdk

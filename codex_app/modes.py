@@ -72,7 +72,7 @@ AGENTS.md file in the project root for future coding sessions. Keep it short and
 project: what it is, how to install, run and test it, the main folders and files, the code style it
 follows, and anything easy to get wrong. If AGENTS.md already exists, improve it rather than starting over."""
 
-INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
+INSTRUCTION_FILES = ("AGENTS.md",)  # the files Codex reads by itself (it does not read CLAUDE.md)
 
 
 def project_instructions(root: Path) -> tuple[str, str]:
