@@ -21,8 +21,8 @@ import threading
 import time
 from pathlib import Path
 
-from codex_app import __version__, approvals, costs, engine, export, gitflow, outside, prefs, profiles, protect, \
-    sessions, undo, updater
+from codex_app import __version__, approvals, browser, costs, engine, export, gitflow, outside, prefs, profiles, \
+    protect, sessions, undo, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
 from codex_app.modes import INIT_TASK, MODES, make_reviewer, make_writer, project_instructions, review_task, \
@@ -65,6 +65,8 @@ HELP = """Commands (most are the same as official Codex's):
   /skills                 list the skills Codex can use; write $name in a message to use one
   /mcp                    list the MCP servers (external tools) Codex is set up with
   /secrets [on|off]       list secret files in the project; turn the secret guard on or off
+  /browser [on|off]       Codex App's private browser: Codex can visit websites and act on them
+                          when you ask (risky clicks wait for your yes; starts a new conversation)
   /compact                summarise the conversation so far, to free up context
   /init                   write an AGENTS.md that describes this project
   /models                 list the models Codex can use
@@ -335,6 +337,7 @@ class App:
         self._limits_unavailable = ""
         self.queued = collections.deque()  # /queue: tasks waiting for the current one to finish
         self.last_run = {}      # what the last task did, for --json
+        self.browser_watcher = None  # asks you before the browser clicks or submits something risky
         costs.load_prices()     # /prices: saved model prices, so costs show in dollars  # why plan limits can't be shown (API-key sign-in), once known
         self._last_message = ""
         self.codex = codex
@@ -705,6 +708,41 @@ class App:
                   f"{', and the secret guard stops it if it starts to' if self.settings.secret_guard else ''}. "
                   f"For full safety keep them outside the project folder. (/secrets lists them){RESET}")
 
+    def start_browser(self) -> bool:
+        """Get the private browser ready for new conversations. False (with a message) if it can't run."""
+        why = browser.available()
+        if why:
+            print(f"{RED}The browser can't start here: {why}.{RESET}")
+            self.settings.browser = False
+            return False
+        if self.settings.browser_server is None:
+            folder = browser.new_confirm_dir()
+            self.settings.browser_server = browser.server_config(folder, self.settings.browser_channel,
+                                                                 self.settings.browser_headless)
+            self.browser_watcher = browser.ConfirmWatcher(
+                folder, ask=self.ask, notice=lambda text: self.screen.event("app", "notice", text)).start()
+        self.settings.browser = True
+        return True
+
+    def browser_command(self, arg: str) -> None:
+        """/browser on|off: Codex App's private browser for the next conversation; /browser says which."""
+        if arg == "on":
+            if not self.start_browser():
+                return
+            self.save()
+            self.new_conversation(self.mode.name)
+            where = "in a window you can watch" if not self.settings.browser_headless else "without a window"
+            print(f"{GREEN}* The browser is on ({self.settings.browser_channel}, {where}), in a new conversation. "
+                  f"Ask Codex to visit a site. It has none of your sign-ins; risky clicks wait for your yes.{RESET}")
+        elif arg == "off":
+            self.settings.browser = False
+            self.save()
+            self.new_conversation(self.mode.name)
+            print("The browser is off, in a new conversation (the old one is saved; /resume brings it back).")
+        else:
+            print(f"The browser is {'on' if self.settings.browser else 'off'}. /browser on or /browser off "
+                  "(each starts a new conversation). /save remembers it for this project.")
+
     def secrets(self, arg: str) -> None:
         if arg in ("on", "off"):
             self.settings.secret_guard = arg == "on"
@@ -857,6 +895,7 @@ class App:
         s, start = self.settings, self.start_settings
         values = {"mode": self.mode.name, "power": s.power, "profile": s.profile, "permission": s.permission,
                   "approval": s.approval, "team_size": s.team_size, "web_search": s.web_search, "notify": s.notify,
+                  "browser": s.browser,
                   # the models without the power preset on top, so loading applies the power level again
                   **{k: getattr(start if s.power != "normal" else s, k) for k in
                      ("single_model", "single_effort", "planner_model", "planner_effort", "worker_model",
@@ -897,6 +936,7 @@ class App:
         print(f"  Approval:    {APPROVALS[s.approval]}")
         print(f"  Web search:  {'live' if s.web_search else 'off'}")
         print(f"  Outside tools: {'on (computer use, browsers, account plugins)' if s.outside_tools else 'off (--outside-tools turns on computer use, browsers, account plugins)'}")
+        print(f"  Browser:     {'on, private (' + s.browser_channel + ')' if s.browser else 'off (/browser on)'}")
         print(f"  Account:     {account_text}")
         limits = self.check_limits(after_task=False)
         if limits:
@@ -1235,6 +1275,8 @@ class App:
             self.show_mcp()
         elif name == "/secrets":
             self.secrets(arg)
+        elif name == "/browser":
+            self.browser_command(arg)
         elif name == "/init":
             self.run_task(INIT_TASK)
         elif name == "/login":
@@ -1391,6 +1433,9 @@ def main(argv=None) -> int:
     parser.add_argument("--image", "-i", action="append", default=[], metavar="FILE",
                         help="attach an image to the task (can be given more than once)")
     parser.add_argument("--search", action="store_true", help="let Codex search the web live")
+    parser.add_argument("--browser", action="store_true",
+                        help="give Codex App's private browser to Codex: it can visit websites and act on them "
+                             "when you ask (risky clicks wait for your yes)")
     parser.add_argument("--outside-tools", action="store_true",
                         help="let Codex use plugins that work outside the project: computer use, browsers, Slack, "
                              "calendars (off by default)")
@@ -1457,6 +1502,7 @@ def main(argv=None) -> int:
         settings.approval = args.approval or settings.approval
         settings.web_search = args.search or settings.web_search
         settings.outside_tools = args.outside_tools or settings.outside_tools
+        settings.browser = args.browser or settings.browser
         settings.profile = args.profile or settings.profile
         settings.team_size = args.team_size or settings.team_size
         settings.check()
@@ -1509,6 +1555,9 @@ def main(argv=None) -> int:
             return 1
         app = App(codex, sdk, root, settings, mode_name, approver=approver, screen=screen,
                   update_notice=update_notice, start_settings=start_settings)
+        if settings.browser and app.start_browser():
+            app.new_conversation(mode_name)  # its agents now get the browser
+            print(f"{GREY}The private browser is on: Codex can visit websites when you ask.{RESET}")
         approver.ask_user = app.ask  # approval questions go through the input pump once it runs
         if args.resume:
             last = sessions.latest_for_project(root)
