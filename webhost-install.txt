@@ -154,8 +154,11 @@ To carry on with the last conversation, add:  --continue
 Notes:
   - codex-app.cmd is for Windows only. On the host, always start it with the
     .venv/bin/python main.py line above.
-  - Codex App has no "ask before each change" mode. Look first with --permission plan, then do
-    the work with the default "workspace".
+  - Look first with --permission plan, then do the work with the default "workspace".
+    To answer y/n yourself when Codex wants to leave the sandbox, add --approval ask
+    (experimental).
+  - The app refuses to start on your whole home folder (~) or a system folder, and refuses
+    commands that would damage the server. Always point --project at one site's folder.
   - Type /help inside the app for all commands, and /exit to quit.
 
 

@@ -2,6 +2,25 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+Closer to official Codex, and safer for the system disk.
+
+- New commands, as in official Codex: `/model`, `/status`, `/diff`, `/review` (uncommitted changes, a
+  branch, a commit, or your own instructions; read-only), `/compact`, `/new`, `/fork`, `/rename`,
+  `/logout`, `/mention`, `/image`, `/approval`. `/permissions`, `/approvals` and `/quit` work as aliases.
+- `@path` in a message attaches that file; `--image` and `/image` attach pictures.
+- While Codex works: its plan as a checklist, the diff of the files it changed, and after each answer
+  the tokens used and how much context is left.
+- Options as in official Codex: `--cd`/`-C`, `-m`, `--effort`, `--sandbox`/`-s` (with official names
+  `read-only`, `workspace-write`, `danger-full-access`), `--ask-for-approval`/`-a`, `--image`/`-i`,
+  `--search`, and `-c key=value`. **`-c` now means `--config`**; use `--continue` to carry on.
+- `--approval ask` (experimental): you answer y/n when Codex wants to leave the sandbox.
+- System protection: the app refuses a disk root, a system folder or your whole home folder as the
+  project; refuses requests that would format disks, change the registry or boot settings, delete
+  system folders and the like; and `full` permission needs you to type `yes`.
+- Efforts `none` and `minimal` are accepted, as Codex offers them.
+
 ## 1.1.1 (2026-11-24)
 
 - `py main.py --update` exits with an error when a check couldn't be done or an update didn't work

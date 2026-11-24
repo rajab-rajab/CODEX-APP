@@ -69,22 +69,61 @@ py main.py --project "C:\path\to\project" --mode dual
 py main.py --project "C:\path\to\project" --continue
 ```
 
+```bash
+py main.py --project "C:\path\to\project" --image screenshot.png "why does the page look like this?"
+```
+
 `codex-app.cmd` starts it too. Add the folder to your PATH to type `codex-app --mode dual` from anywhere.
+
+The command-line options follow official Codex where they can:
+
+| Option | What it does |
+|---|---|
+| `--project`, `--cd`, `-C` | The project folder Codex works in |
+| `--mode single\|dual` | A) single model or B) planner + worker |
+| `--model`, `-m`, `--effort` | Single mode model and reasoning effort |
+| `--planner-model`, `--worker-model` | Dual mode models |
+| `--permission`, `--sandbox`, `-s` | `plan`, `workspace`, `full`, or official Codex's `read-only`, `workspace-write`, `danger-full-access` |
+| `--approval`, `--ask-for-approval`, `-a` | `deny_all`, `auto_review` or `ask` (see below) |
+| `--image`, `-i` | Attach an image (more than once for several) |
+| `--search` | Let Codex search the web live |
+| `--config`, `-c` | A Codex setting, `-c key=value`, exactly as in official Codex |
+| `--continue` | Carry on with the last conversation |
+
+`-c` now means `--config`, as in official Codex. In 1.1.1 and earlier it was short for `--continue`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
+Most of these are the same as official Codex's.
+
+| Command | What it does |
+|---|---|
 | `/mode single`, `/mode dual` | Switch mode (starts a new conversation) |
-| `/permission plan\|workspace\|full` | What Codex may change (see below) |
+| `/model [name [effort]]` | Show or switch the model and reasoning effort, from the next message on. Dual mode: `/model planner <name>` or `/model worker <name>` |
+| `/permission <mode>` (or `/permissions`) | What Codex may change (see below) |
+| `/approval <mode>` (or `/approvals`) | What happens when Codex wants to leave the sandbox (see below) |
+| `/status` | Models, permission, approval, account, versions, tokens and context left |
+| `/diff` | The project's git changes, including new files |
+| `/review [what]` | A read-only code review in its own conversation: `uncommitted` (default), `branch <base>`, `commit <sha>`, or your own instructions |
+| `/mention <file>`, or `@path` in a message | Attach a file to your message |
+| `/image <file>` | Attach an image to your next message |
+| `/compact` | Summarise the conversation so far, to free up context |
 | `/init` | Writes an `AGENTS.md` describing your project. Codex reads it automatically |
 | `/models` | Lists the models Codex can use |
-| `/usage` | Tokens used |
+| `/usage` | Tokens used and context left |
+| `/new`, `/clear` | Starts a new conversation |
+| `/fork` | Carries on in a copy of this conversation, keeping the original |
+| `/rename <title>` | Renames this conversation |
 | `/sessions`, `/resume [number]` | Lists saved conversations and goes back to one |
-| `/clear` | Starts a new conversation |
-| `/login` | Signs in with your ChatGPT account |
+| `/login`, `/logout` | Signs in with your ChatGPT account, or signs out |
 | `/update`, `/version` | Installs the newest Codex App from GitHub, or shows the version |
-| `/exit` | Quits |
+| `/exit`, `/quit` | Quits |
+
+While Codex works you see what official Codex shows too: its plan as a checklist (`[x]` done, `[>]`
+doing, `[ ]` to do), each command and edit, the diff of the files it changed, and after each answer the
+tokens used and how much of the model's context is left.
 
 **Ctrl+C** stops the current task. Codex is told to stop, and you can carry on with a new message.
 
@@ -92,18 +131,38 @@ py main.py --project "C:\path\to\project" --continue
 
 | Permission | What Codex may do |
 |---|---|
-| `plan` | Read files and run read-only commands. Changes nothing |
-| `workspace` (default) | Change files and run commands inside the project folder only |
-| `full` | No sandbox: anything your Windows account can do. Use only if you must |
+| `plan` (official: `read-only`) | Read files and run read-only commands. Changes nothing |
+| `workspace` (default; official: `workspace-write`) | Change files and run commands inside the project folder only |
+| `full` (official: `danger-full-access`) | No sandbox: anything your Windows account can do. You must type `yes` to turn it on |
 
-Sometimes Codex wants to step outside the sandbox, for example to use the network. `--approval`
-decides what happens then:
+Sometimes Codex wants to step outside the sandbox, for example to use the network or write in
+another folder. `--approval` (or `/approval`) decides what happens then:
 
 - `deny_all` (default): always refused.
 - `auto_review`: Codex's own reviewer decides.
+- `ask` (experimental): you answer `y` or `n` for each request, like official Codex's "on-request"
+  mode. This uses a part of Codex's SDK that isn't documented, so it may stop working with a future
+  engine. If it doesn't work, the app tells you and uses `deny_all`.
 
-Codex App has no "ask me before each change" mode, because Codex's SDK doesn't offer one. Use
-`plan` to look first, then `workspace` to do the work.
+## Protecting your system
+
+Codex is kept away from the system disk and system files in four ways:
+
+1. **The project folder is checked.** The app refuses to start on a disk root (`C:\`, `/`), a system
+   folder (`C:\Windows`, `C:\Program Files`, `C:\ProgramData`, `/etc`, `/usr`, ...), a folder inside one,
+   or your whole home folder. Codex may change anything inside the project folder, so it must be the
+   folder of one project.
+2. **Codex's sandbox.** With `plan` and `workspace`, Codex itself blocks writes outside the project
+   folder. `full` turns this off, so it needs you to type `yes`, and it can't be used without someone
+   at the keyboard.
+3. **Dangerous requests are refused.** If Codex asks to run something that would damage the system
+   (formatting a disk, `diskpart`, `bcdedit`, changing the registry, `rm -rf /`, deleting system
+   restore points, shutting down, or changing files in a system folder), or to write in a system
+   folder, the app says no without asking you.
+4. **Codex is told** never to touch the operating system, system folders, the registry, drivers,
+   boot settings or disks, and to ask you if a task seems to need it.
+
+With `full` nothing stops Codex for real except instruction 4, so keep `workspace` unless you must.
 
 ## Secret files
 
@@ -123,13 +182,14 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | Variable | Default | Meaning |
 |---|---|---|
 | `CODEX_APP_MODEL` | `gpt-6.2-sol` | Single mode model |
-| `CODEX_APP_EFFORT` | `medium` | Single mode effort: `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
+| `CODEX_APP_EFFORT` | `medium` | Single mode effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
 | `CODEX_APP_PLANNER_MODEL` | `gpt-6.2-astra` | Dual mode planner |
 | `CODEX_APP_PLANNER_EFFORT` | `high` | Planner effort |
 | `CODEX_APP_WORKER_MODEL` | `gpt-6.2-sol` | Dual mode worker |
 | `CODEX_APP_WORKER_EFFORT` | `medium` | Worker effort |
 | `CODEX_APP_PERMISSION` | `workspace` | Starting permission |
-| `CODEX_APP_APPROVAL` | `deny_all` | Requests to leave the sandbox |
+| `CODEX_APP_APPROVAL` | `deny_all` | Requests to leave the sandbox: `deny_all`, `auto_review`, `ask` |
+| `CODEX_APP_SEARCH` | `no` | Let Codex search the web live (same as `--search`) |
 | `CODEX_APP_MAX_REVIEW_ROUNDS` | `2` | How many times the planner may send work back |
 | `CODEX_APP_UPDATE_CHECK` | `yes` | Look for a new app version once a day at start |
 
@@ -186,7 +246,9 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 |---|---|
 | `main.py` | The terminal app: sign-in, commands, screen output |
 | `codex_app/modes.py` | `SingleMode`, `DualMode` and each role's instructions |
-| `codex_app/agent.py` | One Codex thread: start, resume, stream and show its work |
+| `codex_app/agent.py` | One Codex thread: start, resume, fork, compact, stream and show its work |
+| `codex_app/approvals.py` | Answering Codex's requests to leave the sandbox, and the `ask` mode |
+| `codex_app/protect.py` | Keeping Codex away from the system disk and system files |
 | `codex_app/config.py` | Settings, permissions, prices |
 | `codex_app/sessions.py` | Saving and resuming conversations |
 | `codex_app/updater.py` | Updating Codex App from GitHub and the Codex engine from PyPI |
