@@ -150,6 +150,9 @@ Most of these are the same as official Codex's.
 | `/status` | Models, permission, approval, account, versions, tokens and context left |
 | `/undo` | Put the files **and** the conversation back to before your last message (again to go further back). Shows what it will change and asks first |
 | `/diff` | The project's git changes, including new files |
+| `/commit [message]` | Commit the changes. Codex writes the message from the diff unless you give one; you approve or edit it. Secret files are never committed |
+| `/pr [title]` | Push the work to a branch and open a pull request on GitHub (needs [gh](https://cli.github.com)); asks first |
+| `/save [show\|clear]` | Remember this project's mode, power, profile, permission and models for the next start |
 | `/review [what]` | A read-only code review in its own conversation: `uncommitted` (default), `branch <base>`, `commit <sha>`, or your own instructions |
 | `/mention <file>`, or `@path` in a message | Attach a file to your message |
 | `/image <file>` | Attach an image to your next message |
@@ -229,6 +232,39 @@ keeps Codex away from them in four ways:
 The guard acts the moment a command starts, so a very fast command may still finish first. For a
 project with real secrets the safest place for them is still outside the project folder.
 
+## Reliability
+
+- **Automatic retries.** When a turn fails because OpenAI's servers are busy or had an internal error,
+  the app waits (5, 15, then 45 seconds) and asks Codex to carry on from where it stopped, up to 3 times
+  (`CODEX_APP_RETRIES`, 0 turns it off). The message isn't sent again, so finished work isn't repeated.
+  Usage limits and bad requests aren't retried, because waiting a minute won't fix them.
+- **Limit warnings.** Signed in with a ChatGPT account, `/status` shows how much of your plan's limits
+  you have used and when they reset, and the app warns after a task once a limit is 80% used. If a limit
+  is hit, it says so. With an API key there are no plan limits to show: set a monthly spend limit in
+  your OpenAI account.
+- **Finish signal.** When a task took 30 seconds or more, the app beeps and, on Windows, shows a
+  notification, so you can do something else while Codex works (`CODEX_APP_NOTIFY=no` turns it off,
+  `CODEX_APP_NOTIFY_AFTER` sets the seconds).
+
+## Git: commit and pull request
+
+`/commit` shows the changed files and a commit message Codex wrote from the actual diff (in a separate,
+read-only conversation). You commit it with `y`, write your own with `e`, or stop with `n`. Secret
+files are never staged, even if `.gitignore` doesn't exclude them; the app tells you to add them there.
+
+`/pr` commits anything left first, then shows what it will do and asks. On `main`, your new commits
+move to a new branch (for example `codex/fix-the-login-bug`) and `main` goes back to match GitHub, so
+nothing is lost. Then it pushes the branch and opens the pull request with GitHub's `gh` tool, and
+shows its link. Git hooks run as usual.
+
+## Saved preferences
+
+`/save` remembers this project's mode, power, profile, permission, approval, models, efforts, team
+size, web search and finish signal in `C:\Users\<you>\.codex-app\projects.json`. The next start on
+that project uses them. Command-line options still win, and saved preferences win over environment
+variables. `/save show` lists them and `/save clear` forgets them. A saved `full` permission still asks
+for `yes` at every start.
+
 ## Undo
 
 `/undo` puts back both the files and Codex's conversation as they were before your last message;
@@ -264,6 +300,9 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_POWER` | `normal` | Power level: `normal`, `high`, `max` |
 | `CODEX_APP_TEAM_SIZE` | `3` | Team mode: workers at the same time (1 to 8) |
 | `CODEX_APP_SECRET_GUARD` | `yes` | Stop a turn the moment Codex starts to read or change a secret file |
+| `CODEX_APP_RETRIES` | `3` | Automatic retries when OpenAI is busy (0 to turn off) |
+| `CODEX_APP_NOTIFY` | `yes` | Beep and show a notification when a long task finishes |
+| `CODEX_APP_NOTIFY_AFTER` | `30` | How many seconds make a task "long" |
 | `CODEX_APP_MAX_REVIEW_ROUNDS` | `2` | How many times the planner may send work back |
 | `CODEX_APP_UPDATE_CHECK` | `yes` | Look for a new app version once a day at start |
 
@@ -326,6 +365,8 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/profiles.py` | Task profiles (coding, chat, maths) and power presets |
 | `codex_app/goals.py` | Goal mode: Codex working on its own until a goal is done |
 | `codex_app/undo.py` | File snapshots and restoring them for `/undo` |
+| `codex_app/gitflow.py` | `/commit` and `/pr`: committing and opening pull requests |
+| `codex_app/prefs.py` | Saved preferences per project (`/save`) and the finish signal |
 | `codex_app/engine.py` | Engine requests the SDK has no method for: undoing turns, MCP servers, skills |
 | `codex_app/config.py` | Settings, permissions, prices |
 | `codex_app/sessions.py` | Saving and resuming conversations |

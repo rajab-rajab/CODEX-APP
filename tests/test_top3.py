@@ -51,7 +51,8 @@ class FakeClient:
         self.calls, self.replies = [], replies or {}
 
     def request(self, method, params, response_model=None):
-        self.calls.append((method, params))
+        if method != "account/rateLimits/read":  # checked after every task; not what these tests are about
+            self.calls.append((method, params))
         reply = self.replies.get(method)
         return reply(params) if callable(reply) else reply
 

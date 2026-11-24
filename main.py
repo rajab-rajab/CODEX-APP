@@ -16,12 +16,14 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
-from codex_app import __version__, approvals, engine, profiles, protect, sessions, undo, updater
+from codex_app import __version__, approvals, engine, gitflow, prefs, profiles, protect, sessions, undo, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
-from codex_app.modes import INIT_TASK, MODES, make_reviewer, project_instructions, review_task
+from codex_app.modes import INIT_TASK, MODES, make_reviewer, make_writer, project_instructions, review_task, \
+    write_message
 
 GREY, CYAN, YELLOW, RED, GREEN, RESET = "\033[90m", "\033[36m", "\033[33m", "\033[31m", "\033[32m", "\033[0m"
 
@@ -45,6 +47,9 @@ HELP = """Commands (most are the same as official Codex's):
   /undo                   put back the files and the conversation as they were before your last
                           message (again to go further back)
   /diff                   the project's git changes, including new files
+  /commit [message]       commit the changes; Codex writes the message unless you give one
+  /pr [title]             push to a branch and open a pull request (needs GitHub's gh)
+  /save [show|clear]      remember this project's mode, power, profile, permission and models
   /review [what]          a read-only code review: uncommitted (default), branch <base>,
                           commit <sha>, or your own instructions
   /mention <file>         attach a file to your next message (or write @path in a message)
@@ -167,6 +172,10 @@ class InputPump:
                 continue
 
 
+LIMIT_FAILURES = {"usageLimitExceeded", "rateLimitExceeded", "sessionBudgetExceeded", "apiKeySpendLimitExceeded",
+                  "projectSpendLimitExceeded", "organizationSpendLimitExceeded"}
+
+
 def parse_budget(text: str):
     """'500k' -> 500000, '1.5m' -> 1500000, '20000' -> 20000; None if it isn't a number."""
     text = text.strip().lower().replace(",", "").replace("_", "")
@@ -279,6 +288,8 @@ class App:
         self._steer_hint = True
         self.undo_points = []   # one per message: what /undo goes back to (newest last)
         self._skills = None     # name -> path, once listed
+        self.writer = None      # writes commit messages and pull request descriptions
+        self._limits_unavailable = ""  # why plan limits can't be shown (API-key sign-in), once known
         self._last_message = ""
         self.codex = codex
         self.sdk = sdk
@@ -366,6 +377,27 @@ class App:
         self.title = data.get("title", "")
         print(f"Resumed '{self.title or path.name}' ({data['mode']} mode, saved {data.get('saved', '?')}).")
 
+    def check_limits(self, after_task: bool = True) -> list[str]:
+        """Warn when a plan or rate limit is nearly used up, or was hit. Returns the lines for /status."""
+        if self._limits_unavailable:
+            return [] if after_task else [self._limits_unavailable]
+        try:
+            snapshot = engine.rate_limits(self.codex)
+        except Exception as e:
+            if "chatgpt authentication required" in str(e).lower():
+                # Signed in with an API key: Codex has no plan limits to report (spend limits are set at OpenAI).
+                self._limits_unavailable = ("shown only when signed in with a ChatGPT account; with an API key, "
+                                            "set a monthly spend limit in your OpenAI account")
+                return [] if after_task else [self._limits_unavailable]
+            return []
+        lines, warnings = engine.describe_limits(snapshot)
+        hit = {a.last_failure for a in self.mode.agents()} & LIMIT_FAILURES
+        if after_task and hit:
+            print(f"{YELLOW}  You've hit a usage limit. " + ("; ".join(lines) or "Try again later.") + RESET)
+        elif after_task and warnings:
+            print(f"{YELLOW}  Careful: {'; '.join(warnings)}.{RESET}")
+        return lines
+
     def status_line(self) -> None:
         left = self.mode.context_left()
         used = sum(u.input + u.output for _, u in self.mode.usage())
@@ -385,6 +417,7 @@ class App:
             self._steer_hint = False
         point = {"mode": self.mode, "title": self._last_message, "tree": undo.snapshot(self.root),
                  "marks": {a.name: len(a.turns_log) for a in self.mode.agents()}}
+        started = time.monotonic()
         self._busy = True
         try:
             work()
@@ -400,6 +433,11 @@ class App:
                 self.undo_points.append(point)
             self.save()
         self.status_line()
+        self.check_limits()
+        took = time.monotonic() - started
+        if self.settings.notify and took >= self.settings.notify_after:
+            minutes, seconds = divmod(int(took), 60)
+            prefs.signal_done(f"Finished after {minutes} min {seconds} s: {self._last_message[:80]}")
 
     def run_task(self, task: str, attachments=()) -> None:
         self.title = self.title or task[:80]
@@ -614,6 +652,149 @@ class App:
             print(f"  {path}")
         print(f"Secret guard: {'on' if self.settings.secret_guard else 'off'} (/secrets on|off)")
 
+    def _write(self, what: str, text: str) -> tuple[str, str]:
+        model = self.settings.worker_model if self.mode.name != "single" else self.settings.single_model
+        if self.writer is None or self.writer.model != model:
+            self.writer = make_writer(self.codex, self.sdk, self.root, self.settings, model, on_event=self.screen.event)
+        self.writer.reset()  # each message is written in a fresh, read-only conversation
+        return write_message(self.writer, what, text)
+
+    def commit(self, arg: str = "") -> bool:
+        """/commit: commit the changes, never secret files. Codex writes the message unless one is given.
+        True if a commit was made."""
+        if not gitflow.is_repo(self.root):
+            print("This project is not a git repository. Run 'git init' first to use /commit.")
+            return False
+        try:
+            files = gitflow.changed_files(self.root)
+        except gitflow.GitError as e:
+            print(f"{RED}git: {e}{RESET}")
+            return False
+        paths, secrets = gitflow.split_secrets(files)
+        if secrets:
+            print(f"{YELLOW}Not committed, because they may hold secrets: {', '.join(secrets)}. "
+                  f"Add them to .gitignore.{RESET}")
+        if not paths:
+            print("Nothing to commit.")
+            return False
+        status = {path: st for st, path in files}
+        print("Changes to commit:\n" + "\n".join(f"  {status[p]:2} {p}" for p in paths[:25])
+              + (f"\n  ... and {len(paths) - 25} more" if len(paths) > 25 else ""))
+        if arg.strip():
+            subject, body = arg.strip(), ""
+        else:
+            print(f"{GREEN}* Codex is writing the commit message.{RESET}")
+            try:
+                subject, body = self._write("git commit message", gitflow.diff_text(self.root, paths))
+            except (self.sdk.CodexError, gitflow.GitError) as e:
+                print(f"{RED}Could not write a message ({e}). Use /commit <message>.{RESET}")
+                return False
+            finally:
+                self.screen.finish()
+        print(f"Message:\n  {subject}" + ("".join(f"\n  {line}" for line in body.splitlines()) if body else ""))
+        answer = self.ask("Commit with this message? [y/e(dit)/N] ").strip().lower()
+        if answer in ("e", "edit"):
+            typed = self.ask("Your commit message (one line): ").strip()
+            if not typed:
+                print("Nothing was committed.")
+                return False
+            subject, body = typed, ""
+        elif answer not in ("y", "yes"):
+            print("Nothing was committed.")
+            return False
+        try:
+            short = gitflow.commit(self.root, f"{subject}\n\n{body}" if body else subject, paths)
+        except gitflow.GitError as e:
+            print(f"{RED}The commit failed: {e}{RESET}")
+            return False
+        print(f"{GREEN}* Committed {short}: {subject}{RESET}")
+        return True
+
+    def pull_request(self, arg: str = "") -> None:
+        """/pr: push the work to a branch and open a pull request, after asking."""
+        if not gitflow.is_repo(self.root):
+            print("This project is not a git repository.")
+            return
+        if not gitflow.has_remote(self.root):
+            print("This repository has no 'origin' remote on GitHub to open a pull request on.")
+            return
+        if not gitflow.gh_available():
+            print("Opening a pull request needs GitHub's gh tool: install it from https://cli.github.com "
+                  "and run 'gh auth login'.")
+            return
+        try:
+            paths, _ = gitflow.split_secrets(gitflow.changed_files(self.root))
+            if paths:
+                print("There are uncommitted changes; committing them first.")
+                if not self.commit():
+                    print("No pull request was opened.")
+                    return
+            base, branch = gitflow.default_branch(self.root), gitflow.current_branch(self.root)
+            ahead = gitflow.commits_ahead(self.root, base)
+        except gitflow.GitError as e:
+            print(f"{RED}git: {e}{RESET}")
+            return
+        if not ahead:
+            print(f"There are no commits to put in a pull request: this branch matches {base} on GitHub.")
+            return
+        if arg.strip():
+            title, body = arg.strip(), ""
+        elif len(ahead) == 1:
+            title, body = gitflow.last_commit_message(self.root)
+        else:
+            print(f"{GREEN}* Codex is writing the pull request description.{RESET}")
+            try:
+                log = "\n".join(f"- {subject}" for _, subject in ahead)
+                title, body = self._write("pull request title (as subject) and description (as body)",
+                                          f"Commits:\n{log}\n\n{gitflow.diff_text(self.root, ['.'])}")
+            except (self.sdk.CodexError, gitflow.GitError) as e:
+                print(f"{RED}Could not write a description ({e}). Use /pr <title>.{RESET}")
+                return
+            finally:
+                self.screen.finish()
+        new_branch = branch == base or branch == "HEAD"
+        target = gitflow.branch_name(title, self.root) if new_branch else branch
+        print(f"Pull request into {base}: {title}")
+        print(f"  {len(ahead)} commit{'s' if len(ahead) != 1 else ''}: " + "; ".join(s for _, s in ahead[:5])
+              + (" ..." if len(ahead) > 5 else ""))
+        if new_branch:
+            print(f"  Your commits move to a new branch, {target}, and {base} goes back to match GitHub "
+                  "(nothing is lost: the commits are on the new branch).")
+        if self.ask(f"Push {target} to GitHub and open the pull request? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Nothing was pushed.")
+            return
+        try:
+            if new_branch:
+                gitflow.move_to_branch(self.root, target, base)
+            gitflow.push(self.root, target)
+            url = gitflow.create_pr(self.root, base, target, title, body)
+        except gitflow.GitError as e:
+            print(f"{RED}Could not open the pull request: {e}{RESET}")
+            return
+        print(f"{GREEN}* Pull request opened: {url}{RESET}")
+
+    def save_prefs(self, arg: str = "") -> None:
+        """/save: remember this project's settings; /save show; /save clear."""
+        if arg == "clear":
+            print("Forgot this project's saved preferences." if prefs.clear(self.root)
+                  else "This project has no saved preferences.")
+            return
+        if arg == "show":
+            saved = prefs.load(self.root)
+            print("Saved for this project: " + (", ".join(f"{k}={v}" for k, v in saved.items()) if saved else "nothing"))
+            return
+        s, start = self.settings, self.start_settings
+        values = {"mode": self.mode.name, "power": s.power, "profile": s.profile, "permission": s.permission,
+                  "approval": s.approval, "team_size": s.team_size, "web_search": s.web_search, "notify": s.notify,
+                  # the models without the power preset on top, so loading applies the power level again
+                  **{k: getattr(start if s.power != "normal" else s, k) for k in
+                     ("single_model", "single_effort", "planner_model", "planner_effort", "worker_model",
+                      "worker_effort")}}
+        saved = prefs.save(self.root, values)
+        print("Saved for this project, used from the next start: " + ", ".join(f"{k}={v}" for k, v in saved.items()))
+        if s.permission == "full":
+            print(f"{YELLOW}The 'full' permission still needs you to type yes at each start.{RESET}")
+
     def set_profile(self, arg: str) -> None:
         if arg not in profiles.PROFILES:
             print("Use /profile auto, coding, chat or maths. auto picks one for each message.")
@@ -645,13 +826,21 @@ class App:
         print(f"  Approval:    {APPROVALS[s.approval]}")
         print(f"  Web search:  {'live' if s.web_search else 'off'}")
         print(f"  Account:     {account_text}")
+        limits = self.check_limits(after_task=False)
+        if limits:
+            print(f"  Limits:      {'; '.join(limits)}")
+        saved = prefs.load(self.root)
+        print(f"  Saved prefs: {', '.join(f'{k}={v}' for k, v in saved.items()) if saved else 'none (/save remembers them)'}")
         print(f"  Saved as:    {self.session_path.name}{f'  ({self.title})' if self.title else ''}")
         for agent in self.mode.agents():
             print(f"  {agent.name:11}  thread {agent.thread_id or '(not started)'}")
         print_usage(self.mode, self.extra_usage())
 
     def extra_usage(self):
-        return [(f"reviewer ({self.reviewer.model})", self.reviewer.usage)] if self.reviewer else []
+        extra = [(f"reviewer ({self.reviewer.model})", self.reviewer.usage)] if self.reviewer else []
+        if self.writer:
+            extra.append((f"writer ({self.writer.model})", self.writer.usage))
+        return extra
 
     def review(self, arg: str) -> None:
         words = arg.split(maxsplit=1)
@@ -808,6 +997,12 @@ class App:
             print("Nothing is running.")
         elif name == "/undo":
             self.undo()
+        elif name == "/commit":
+            self.commit(arg)
+        elif name == "/pr":
+            self.pull_request(arg)
+        elif name == "/save":
+            self.save_prefs(arg)
         elif name == "/skills":
             self.show_skills()
         elif name == "/mcp":
@@ -912,7 +1107,7 @@ def main(argv=None) -> int:
     parser.add_argument("task", nargs="*", help="a task to run once; leave out to chat")
     parser.add_argument("--project", "--cd", "-C", dest="project", default=".",
                         help="the project folder Codex works in (default: here)")
-    parser.add_argument("--mode", choices=MODES, default="single",
+    parser.add_argument("--mode", choices=MODES,
                         help="single (default), dual (planner + worker), team (planner + workers side by side)")
     parser.add_argument("--goal", action="store_true",
                         help="treat the task as a goal: Codex works on its own until it is done")
@@ -965,6 +1160,13 @@ def main(argv=None) -> int:
             return 1
     try:
         settings = Settings.from_env()
+        saved = prefs.load(root)  # /save: this project's preferences win over environment variables
+        prefs.apply(settings, saved)
+        mode_name = args.mode or saved.get("mode") or "single"
+        if mode_name not in MODES:
+            mode_name = "single"
+        if saved:
+            print(f"{GREY}Using this project's saved preferences (/save show lists them).{RESET}")
         settings.single_model = args.model or settings.single_model
         settings.single_effort = args.effort or settings.single_effort
         settings.planner_model = args.planner_model or settings.planner_model
@@ -1019,7 +1221,7 @@ def main(argv=None) -> int:
             settings.approval = "deny_all"
         if not sign_in(codex) and args.task:
             return 1
-        app = App(codex, sdk, root, settings, args.mode, approver=approver, screen=screen,
+        app = App(codex, sdk, root, settings, mode_name, approver=approver, screen=screen,
                   update_notice=update_notice, start_settings=start_settings)
         approver.ask_user = app.ask  # approval questions go through the input pump once it runs
         if args.resume:
