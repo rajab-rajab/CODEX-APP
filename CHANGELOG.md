@@ -2,6 +2,18 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+`--approval ask` tested with real tasks on Codex engine 0.172.0, and fixed.
+
+- Codex now asks to change files outside the project folder instead of refusing outright. The 1.2.0
+  rule "never touch anything outside the project folder" stopped it from asking at all. System folders,
+  the registry, disks and the like are still never allowed.
+- The approval prompt shows the command itself (`curl -sI https://example.com`), not the PowerShell
+  wrapper Codex puts around every command on Windows. The system-folder check also looks at the
+  command itself, so the wrapper's path under `C:\Program Files` can never cause a wrong refusal.
+- A refused command shows "did not run" instead of "exit code None".
+
 ## 1.2.1 (2026-11-24)
 
 Faster to start, and cheaper in dual mode.

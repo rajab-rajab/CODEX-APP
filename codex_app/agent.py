@@ -283,6 +283,10 @@ class CodexAgent:
         elif kind == "commandExecution":
             code = getattr(item, "exit_code", None)
             out = (getattr(item, "aggregated_output", "") or "").strip().splitlines()
+            if code is None:  # refused, or stopped before it started
+                line = "did not run" + (f": {_short(out[-1], 120)}" if out else "")
+                self._emit("tool_error", line)
+                return
             line = f"exit code {code}" + (f": {_short(out[-1], 120)}" if out else "")
             self._emit("tool_error" if code not in (0, None) else "tool_result", line)
         elif kind == "fileChange":
