@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.9.1 (2026-11-25)
 
 - **Misuse protection for the browser**, whatever the user says or approves:
   - attack strings (SQL, script, command, template and Log4Shell-style injection, path traversal; also
