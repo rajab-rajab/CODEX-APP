@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.2.0 (2026-11-24)
 
 Closer to official Codex, and safer for the system disk.
 
