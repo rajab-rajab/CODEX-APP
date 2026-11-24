@@ -85,6 +85,10 @@ class Settings:
     auto_compact: bool = True      # compact the conversation by itself when little context is left
     auto_compact_at: int = 10      # ... at this percent of context left or less
     outside_tools: bool = False    # computer use, browsers and account plugins (see outside.py): off by default
+    browser: bool = False          # Codex App's own private browser (see browser_mcp.py), for main agents
+    browser_channel: str = "msedge"  # msedge | chrome | chromium
+    browser_headless: bool = False   # no window (for servers); by default you can watch it work
+    browser_server: object = None    # set by the app when the browser is ready (not a setting to save)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -110,12 +114,18 @@ class Settings:
         s.auto_compact = _env_bool("CODEX_APP_AUTO_COMPACT", s.auto_compact)
         s.auto_compact_at = _env_int("CODEX_APP_AUTO_COMPACT_AT", s.auto_compact_at)
         s.outside_tools = _env_bool("CODEX_APP_OUTSIDE_TOOLS", s.outside_tools)
+        s.browser = _env_bool("CODEX_APP_BROWSER", s.browser)
+        s.browser_channel = _env("CODEX_APP_BROWSER_CHANNEL", s.browser_channel)
+        s.browser_headless = _env_bool("CODEX_APP_BROWSER_HEADLESS", s.browser_headless)
         s.check()
         return s
 
-    def thread_config(self) -> dict:
-        """Extra Codex settings for every thread."""
-        return {"web_search": "live"} if self.web_search else {}
+    def thread_config(self, browser: bool = True) -> dict:
+        """Extra Codex settings for a thread. browser=False for helpers (reviews, commit messages)."""
+        config = {"web_search": "live"} if self.web_search else {}
+        if browser and self.browser and self.browser_server:
+            config["mcp_servers"] = {"codex_browser": self.browser_server}
+        return config
 
     def check(self) -> None:
         self.permission = permission_name(self.permission)

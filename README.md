@@ -23,6 +23,33 @@ In dual and team mode:
   missed or misread. If an engine or model can't do that, the app falls back to a text verdict.
 - Parts that would change the same file never run at the same time in team mode.
 
+## Built-in browser
+
+Codex App has its own private web browser, so Codex can visit websites and act on them when you ask:
+"open our site and check the contact form works", "find the opening hours on example.com", "fill in this
+form with the details I gave you". Turn it on with `--browser`, or `/browser on` in the app (a new
+conversation starts); `/save` remembers it for the project.
+
+- **Private.** It is Microsoft Edge (or Chrome) with a fresh, empty profile each time: none of your
+  sign-ins, cookies, history or extensions, and nothing is kept. It is not the computer-use or browser
+  plugins of the official Codex apps, which drive your own signed-in browser and stay off (see
+  "Protecting your system").
+- **You can watch.** A browser window opens and shows what Codex does. `CODEX_APP_BROWSER_HEADLESS=yes`
+  runs it without a window (for example on a server); `CODEX_APP_BROWSER_CHANNEL=chrome` uses Chrome.
+- **Risky actions wait for you.** Before a click or submit that could do something real (buy, pay, order,
+  send, post, delete, sign up, book, subscribe, accept ...), Codex App asks you `y/N`. A search, a link
+  or typing into an ordinary field doesn't need a yes.
+- **No passwords or card numbers.** It never types into password, payment-card or similar fields: if a
+  site needs you to sign in or pay, do that yourself in the window.
+- **Web pages can't give orders.** What a page says reaches Codex marked as untrusted data, and Codex is
+  told never to follow it. Only `http` and `https` addresses open; downloads are blocked.
+
+It needs Playwright, which drives the browser: `py -m pip install playwright`. It uses the Edge or Chrome
+already on your PC; if neither is there, `py -m playwright install chromium` downloads one.
+
+The safety rules are in the browser's own code (`codex_app/browser_mcp.py`), not only in what Codex is
+told, so they hold even if a web page tricks Codex.
+
 ## Goals, steering, power and task profiles
 
 **Goals** (`/goal`, as in official Codex): `/goal make all the tests pass` lets Codex keep working on
@@ -126,6 +153,7 @@ The command-line options follow official Codex where they can:
 | `--approval`, `--ask-for-approval`, `-a` | `deny_all`, `auto_review` or `ask` (see below) |
 | `--image`, `-i` | Attach an image (more than once for several) |
 | `--search` | Let Codex search the web live |
+| `--browser` | Give Codex App's private browser to Codex (see "Built-in browser") |
 | `--outside-tools` | Let Codex use plugins that work outside the project: computer use, browsers, account plugins (off by default; see "Protecting your system") |
 | `--config`, `-c` | A Codex setting, `-c key=value`, exactly as in official Codex |
 | `--json` | With a task: print the result as JSON for scripts (see "Automation") |
@@ -167,6 +195,7 @@ Most of these are the same as official Codex's.
 | `/skills`, or `$name` in a message | List the skills Codex can use; `$name` attaches one to your message |
 | `/mcp` | List the MCP servers (external tools such as GitHub or databases) Codex is set up with, their status and tools |
 | `/secrets [on\|off]` | List secret files in the project; turn the secret guard on or off |
+| `/browser [on\|off]` | Codex App's private browser for the next conversation (see "Built-in browser") |
 | `/compact` | Summarise the conversation so far, to free up context |
 | `/init` | Writes an `AGENTS.md` describing your project. Codex reads it automatically |
 | `/models` | Lists the models Codex can use |
@@ -220,8 +249,8 @@ Codex is kept away from the system disk and system files in four ways:
    folder, the app says no without asking you.
 4. **Codex is told** never to touch the operating system, system folders, the registry, drivers,
    boot settings or disks, and to ask you if a task seems to need it.
-5. **Tools that work outside the project are off.** Codex App uses the same Codex engine and settings
-   as the official Codex apps, so plugins those apps installed would also reach Codex App: computer use
+5. **Tools that work outside the project are off** (Codex App's own private browser is separate; see
+   "Built-in browser"). Codex App uses the same Codex engine and settings as the official Codex apps, so plugins those apps installed would also reach Codex App: computer use
    (which can operate any app on your screen), browsers, and account plugins such as Slack or Google
    Calendar. They work outside the sandbox, so points 1 to 3 don't cover them. Codex App starts the
    engine with them switched off, for its own conversations only (your Codex settings file isn't
@@ -323,6 +352,9 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_APPROVAL` | `deny_all` | Requests to leave the sandbox: `deny_all`, `auto_review`, `ask` |
 | `CODEX_APP_SEARCH` | `no` | Let Codex search the web live (same as `--search`) |
 | `CODEX_APP_OUTSIDE_TOOLS` | `no` | Allow computer use, browsers and account plugins (same as `--outside-tools`) |
+| `CODEX_APP_BROWSER` | `no` | Codex App's private browser (same as `--browser`) |
+| `CODEX_APP_BROWSER_CHANNEL` | `msedge` | Which browser it drives: `msedge`, `chrome` or `chromium` |
+| `CODEX_APP_BROWSER_HEADLESS` | `no` | Run it without a window |
 | `CODEX_APP_PROFILE` | `auto` | Task profile: `auto`, `coding`, `chat`, `maths` |
 | `CODEX_APP_POWER` | `normal` | Power level: `normal`, `high`, `max` |
 | `CODEX_APP_TEAM_SIZE` | `3` | Team mode: workers at the same time (1 to 8) |
@@ -429,6 +461,8 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/approvals.py` | Answering Codex's requests to leave the sandbox, and the `ask` mode |
 | `codex_app/protect.py` | Keeping Codex away from the system disk and system files |
 | `codex_app/outside.py` | Switching off computer use, browsers and account plugins for Codex App |
+| `codex_app/browser_mcp.py` | The built-in browser: an MCP server with its safety rules |
+| `codex_app/browser.py` | The app's side of the browser: starting it and asking you before risky actions |
 | `codex_app/profiles.py` | Task profiles (coding, chat, maths) and power presets |
 | `codex_app/goals.py` | Goal mode: Codex working on its own until a goal is done |
 | `codex_app/undo.py` | File snapshots and restoring them for `/undo` |

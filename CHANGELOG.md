@@ -2,6 +2,15 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Built-in browser** (`--browser`, `/browser on`): Codex can visit websites and act on them when you
+  ask. It is Codex App's own private browser (your installed Edge or Chrome with a fresh, empty profile,
+  so none of your sign-ins), in a window you can watch. Clicks and submits that buy, send, post, delete or
+  the like wait for your y/N; it never types passwords or card numbers; web pages reach Codex as
+  untrusted data; only http and https open and downloads are blocked. The rules are in the browser's own
+  code. Needs `py -m pip install playwright`.
+
 ## 1.8.1 (2026-11-25)
 
 - **Fixed (safety)**: computer use, browsers and account plugins are now off in Codex App by default.

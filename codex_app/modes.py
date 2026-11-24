@@ -17,7 +17,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import approvals, profiles, protect
+from . import approvals, browser as browser_tool, profiles, protect
 from .agent import CodexAgent, Usage
 from .config import Settings
 
@@ -130,8 +130,11 @@ def approval_for(approval: str, sdk):
     return approvals.ASK if approval == approvals.ASK else sdk.ApprovalMode[approval]
 
 
-def _agent(codex, sdk, settings: Settings, **kw) -> CodexAgent:
-    agent = CodexAgent(codex, approval_mode=approval_for(settings.approval, sdk), config=settings.thread_config(),
+def _agent(codex, sdk, settings: Settings, browser: bool = True, **kw) -> CodexAgent:
+    config = settings.thread_config(browser)
+    if "mcp_servers" in config:
+        kw["instructions"] = kw["instructions"] + browser_tool.INSTRUCTIONS
+    agent = CodexAgent(codex, approval_mode=approval_for(settings.approval, sdk), config=config,
                        thread_cls=getattr(sdk, "Thread", None),
                        secret_guard=(lambda item: protect.guard_item(item) if settings.secret_guard else None), **kw)
     agent.retries = max(0, min(10, settings.retries))
@@ -163,7 +166,7 @@ def make_writer(codex, sdk, workspace_root: Path, settings: Settings, model: str
     """A separate read-only Codex thread that writes commit messages and pull request descriptions."""
     return _agent(codex, sdk, settings, name="writer", model=model, effort="low", sandbox=sdk.Sandbox.read_only,
                   instructions=WRITER_INSTRUCTIONS.format(rules=_SHARED_RULES), cwd=workspace_root,
-                  on_event=on_event, ephemeral=True)
+                  on_event=on_event, ephemeral=True, browser=False)
 
 
 def write_message(writer: CodexAgent, what: str, text: str) -> tuple[str, str]:
@@ -183,7 +186,7 @@ def make_reviewer(codex, sdk, workspace_root: Path, settings: Settings, model: s
     """A separate read-only Codex thread for /review, so a review never changes files."""
     return _agent(codex, sdk, settings, name="reviewer", model=model, effort="high", sandbox=sdk.Sandbox.read_only,
                   instructions=REVIEW_INSTRUCTIONS.format(rules=_SHARED_RULES), cwd=workspace_root,
-                  on_event=on_event, ephemeral=True)
+                  on_event=on_event, ephemeral=True, browser=False)
 
 
 def with_attachments(sdk, text: str, attachments=()):
