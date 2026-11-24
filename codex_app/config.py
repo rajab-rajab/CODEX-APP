@@ -84,6 +84,7 @@ class Settings:
     retries: int = 3               # automatic retries when OpenAI is busy (0 turns them off)
     auto_compact: bool = True      # compact the conversation by itself when little context is left
     auto_compact_at: int = 10      # ... at this percent of context left or less
+    outside_tools: bool = False    # computer use, browsers and account plugins (see outside.py): off by default
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -108,6 +109,7 @@ class Settings:
         s.retries = _env_int("CODEX_APP_RETRIES", s.retries)
         s.auto_compact = _env_bool("CODEX_APP_AUTO_COMPACT", s.auto_compact)
         s.auto_compact_at = _env_int("CODEX_APP_AUTO_COMPACT_AT", s.auto_compact_at)
+        s.outside_tools = _env_bool("CODEX_APP_OUTSIDE_TOOLS", s.outside_tools)
         s.check()
         return s
 

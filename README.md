@@ -126,6 +126,7 @@ The command-line options follow official Codex where they can:
 | `--approval`, `--ask-for-approval`, `-a` | `deny_all`, `auto_review` or `ask` (see below) |
 | `--image`, `-i` | Attach an image (more than once for several) |
 | `--search` | Let Codex search the web live |
+| `--outside-tools` | Let Codex use plugins that work outside the project: computer use, browsers, account plugins (off by default; see "Protecting your system") |
 | `--config`, `-c` | A Codex setting, `-c key=value`, exactly as in official Codex |
 | `--json` | With a task: print the result as JSON for scripts (see "Automation") |
 | `--selftest [--offline]` | Check the Codex engine still has everything this app uses |
@@ -219,6 +220,14 @@ Codex is kept away from the system disk and system files in four ways:
    folder, the app says no without asking you.
 4. **Codex is told** never to touch the operating system, system folders, the registry, drivers,
    boot settings or disks, and to ask you if a task seems to need it.
+5. **Tools that work outside the project are off.** Codex App uses the same Codex engine and settings
+   as the official Codex apps, so plugins those apps installed would also reach Codex App: computer use
+   (which can operate any app on your screen), browsers, and account plugins such as Slack or Google
+   Calendar. They work outside the sandbox, so points 1 to 3 don't cover them. Codex App starts the
+   engine with them switched off, for its own conversations only (your Codex settings file isn't
+   changed). At start it lists what it switched off. `--outside-tools` (or `CODEX_APP_OUTSIDE_TOOLS=yes`)
+   turns them on when you want them. Plugins that only work with files (PDF, documents, spreadsheets,
+   presentations) stay on.
 
 With `full` nothing stops Codex for real except instruction 4, so keep `workspace` unless you must.
 
@@ -313,6 +322,7 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_PERMISSION` | `workspace` | Starting permission |
 | `CODEX_APP_APPROVAL` | `deny_all` | Requests to leave the sandbox: `deny_all`, `auto_review`, `ask` |
 | `CODEX_APP_SEARCH` | `no` | Let Codex search the web live (same as `--search`) |
+| `CODEX_APP_OUTSIDE_TOOLS` | `no` | Allow computer use, browsers and account plugins (same as `--outside-tools`) |
 | `CODEX_APP_PROFILE` | `auto` | Task profile: `auto`, `coding`, `chat`, `maths` |
 | `CODEX_APP_POWER` | `normal` | Power level: `normal`, `high`, `max` |
 | `CODEX_APP_TEAM_SIZE` | `3` | Team mode: workers at the same time (1 to 8) |
@@ -418,6 +428,7 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/agent.py` | One Codex thread: start, resume, fork, compact, stream and show its work |
 | `codex_app/approvals.py` | Answering Codex's requests to leave the sandbox, and the `ask` mode |
 | `codex_app/protect.py` | Keeping Codex away from the system disk and system files |
+| `codex_app/outside.py` | Switching off computer use, browsers and account plugins for Codex App |
 | `codex_app/profiles.py` | Task profiles (coding, chat, maths) and power presets |
 | `codex_app/goals.py` | Goal mode: Codex working on its own until a goal is done |
 | `codex_app/undo.py` | File snapshots and restoring them for `/undo` |
