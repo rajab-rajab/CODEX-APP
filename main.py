@@ -9,6 +9,7 @@ Type /help while it runs for the list of commands.
 """
 
 import argparse
+import collections
 import copy
 import os
 import queue
@@ -47,6 +48,8 @@ HELP = """Commands (most are the same as official Codex's):
   /undo                   put back the files and the conversation as they were before your last
                           message (again to go further back)
   /diff                   the project's git changes, including new files
+  /history [number]       Codex's conversations for this project, from any Codex client
+                          (official Codex CLI too); a number carries on with one
   /commit [message]       commit the changes; Codex writes the message unless you give one
   /pr [title]             push to a branch and open a pull request (needs GitHub's gh)
   /save [show|clear]      remember this project's mode, power, profile, permission and models
@@ -70,7 +73,8 @@ HELP = """Commands (most are the same as official Codex's):
   /update                 install the newest Codex App from GitHub (and say if the engine has one)
   /version                show the app and Codex engine versions, and check for newer ones
   /exit, /quit            quit
-While Codex works, type a message to steer it (added to what it's doing), or /stop to stop it.
+While Codex works, type a message to steer it (added to what it's doing), /queue <task> to line up
+the next task, or /stop to stop it.
 Ctrl+C stops the current task too."""
 
 
@@ -174,6 +178,38 @@ class InputPump:
 
 LIMIT_FAILURES = {"usageLimitExceeded", "rateLimitExceeded", "sessionBudgetExceeded", "apiKeySpendLimitExceeded",
                   "projectSpendLimitExceeded", "organizationSpendLimitExceeded"}
+
+
+ORIGINATORS = {"codex_python_sdk": "Codex App", "codex_cli_rs": "Codex CLI", "codex_exec": "codex exec",
+               "codex_vscode": "VS Code", "codex_desktop": "Codex app"}
+
+
+def made_by(thread) -> str:
+    """Which Codex client made a conversation, for /history."""
+    originator = getattr(thread, "originator", None)
+    if originator:
+        return ORIGINATORS.get(originator, originator)[:10]
+    source = _value_root(getattr(thread, "source", ""))
+    return str(getattr(source, "value", source) or "?")[:10]
+
+
+def conversation_title(thread) -> str:
+    """A conversation's name, or its first message without the app's own wrapping ("TASK:", profile notes)."""
+    text = str(getattr(thread, "name", None) or getattr(thread, "preview", "") or "")
+    text = re.sub(r"^\s*\[[^\]]{0,60}\][^\n]*\n+", "", text)  # [Conversation ...] / [Maths] guidance
+    text = re.sub(r"^\s*(TASK|QUESTION[^:]*|GOAL):\s*", "", text)
+    return " ".join(text.split())
+
+
+def review_target(words: list, arg: str) -> dict:
+    """The target for Codex's own review, from /review's words (the same four presets as official Codex)."""
+    if not words or words[0] == "uncommitted":
+        return {"type": "uncommittedChanges"}
+    if words[0] == "branch":
+        return {"type": "baseBranch", "branch": words[1].strip()}
+    if words[0] == "commit":
+        return {"type": "commit", "sha": words[1].strip()}
+    return {"type": "custom", "instructions": arg}
 
 
 def parse_budget(text: str):
@@ -289,7 +325,8 @@ class App:
         self.undo_points = []   # one per message: what /undo goes back to (newest last)
         self._skills = None     # name -> path, once listed
         self.writer = None      # writes commit messages and pull request descriptions
-        self._limits_unavailable = ""  # why plan limits can't be shown (API-key sign-in), once known
+        self._limits_unavailable = ""
+        self.queued = collections.deque()  # /queue: tasks waiting for the current one to finish  # why plan limits can't be shown (API-key sign-in), once known
         self._last_message = ""
         self.codex = codex
         self.sdk = sdk
@@ -348,9 +385,11 @@ class App:
         if text in ("/stop", "/interrupt"):
             print(f"{YELLOW}Stopping...{RESET}")
             self.mode.repair()
+        elif text == "/queue" or text.startswith("/queue "):
+            self.queue(text[len("/queue"):].strip())
         elif text.startswith("/"):
-            print(f"{YELLOW}Codex is working. Type a message to steer it, or /stop to stop it; "
-                  f"commands wait until it's done.{RESET}")
+            print(f"{YELLOW}Codex is working. Type a message to steer it, /queue <task> to do it next, or /stop "
+                  f"to stop it; other commands wait until it's done.{RESET}")
         else:
             names = self.mode.steer(text)
             print(f"{GREY}  (sent to {', '.join(names)} while it works){RESET}" if names
@@ -408,8 +447,19 @@ class App:
         if cost is not None:
             parts.append(f"about ${cost:.4f}")
         print(f"{GREY}  ({', '.join(parts)}){RESET}")
-        if left is not None and left <= 15:
+        if left is not None and left <= self.settings.auto_compact_at and self.settings.auto_compact:
+            self.auto_compact(left)
+        elif left is not None and left <= 15:
             print(f"{YELLOW}  Context is nearly full: /compact frees it up, /new starts fresh.{RESET}")
+
+    def auto_compact(self, left: int) -> None:
+        """Little context left: compact by itself, so long work doesn't stall."""
+        try:
+            if self.mode.compact():
+                print(f"{GREEN}* Only {left}% of the context was left, so Codex summarised the conversation to "
+                      f"free it up (CODEX_APP_AUTO_COMPACT=no turns this off).{RESET}")
+        except self.sdk.CodexError as e:
+            print(f"{YELLOW}  Context is nearly full and compacting failed ({e}): /new starts fresh.{RESET}")
 
     def _run(self, work) -> None:
         if self.pump is not None and self._steer_hint:
@@ -657,7 +707,10 @@ class App:
         if self.writer is None or self.writer.model != model:
             self.writer = make_writer(self.codex, self.sdk, self.root, self.settings, model, on_event=self.screen.event)
         self.writer.reset()  # each message is written in a fresh, read-only conversation
-        return write_message(self.writer, what, text)
+        try:
+            return write_message(self.writer, what, text)
+        finally:
+            self.writer.discard()  # kept out of Codex's history
 
     def commit(self, arg: str = "") -> bool:
         """/commit: commit the changes, never secret files. Codex writes the message unless one is given.
@@ -853,14 +906,21 @@ class App:
             return
         else:
             task = review_task("custom", arg)
-        model = self.settings.planner_model if self.mode.name == "dual" else self.settings.single_model
+        model = self.settings.planner_model if self.mode.name != "single" else self.settings.single_model
         if self.reviewer is None or self.reviewer.model != model:
             self.reviewer = make_reviewer(self.codex, self.sdk, self.root, self.settings, model,
                                           on_event=self.screen.event)
         self.reviewer.reset()  # each review is a fresh, read-only conversation
         print(f"{GREEN}* Reviewing (read-only, {model}).{RESET}")
         try:
-            self.reviewer.send(task)
+            try:
+                # Codex's own review, as in official Codex; the app's review instructions if it can't.
+                self.reviewer.run_review(review_target(words, arg))
+            except (self.sdk.CodexError, AttributeError, TypeError) as e:
+                print(f"{GREY}  (Codex's own review isn't available here ({e}); using the app's.){RESET}")
+                self.reviewer.send(task)  # same fresh, read-only conversation
+            finally:
+                self.reviewer.discard()  # kept out of Codex's history
         except KeyboardInterrupt:
             self.reviewer.interrupt()
             print(f"\n{YELLOW}Review stopped.{RESET}")
@@ -868,6 +928,49 @@ class App:
             print(f"{RED}Codex error: {e}{RESET}")
         finally:
             self.screen.finish()
+
+    def queue(self, arg: str) -> None:
+        """/queue <task>: do it after the current task (or now, if nothing runs). /queue lists, /queue clear empties."""
+        if arg == "clear":
+            self.queued.clear()
+            print("The queue is empty.")
+        elif arg:
+            self.queued.append(arg)
+            print(f"{GREY}  (queued; {len(self.queued)} waiting){RESET}" if self._busy else
+                  f"{GREY}  (queued){RESET}")
+        elif self.queued:
+            print("Waiting:\n" + "\n".join(f"  {n}. {task}" for n, task in enumerate(self.queued, 1)))
+        else:
+            print("Nothing is queued. While Codex works, /queue <task> lines up the next one.")
+
+    def history(self, arg: str) -> None:
+        """/history: Codex's own conversations for this project, from every Codex client (this app, the
+        official Codex CLI, VS Code ...). /history <number> carries on with one, in single mode."""
+        try:
+            found = engine.threads(self.codex, str(self.root), limit=20)
+        except Exception as e:
+            print(f"{RED}Could not list Codex's conversations: {e}{RESET}")
+            return
+        found = [t for t in found if not getattr(t, "ephemeral", False)]
+        if not arg:
+            if not found:
+                print("Codex has no saved conversations for this project folder yet.")
+            for n, t in enumerate(found, 1):
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime((getattr(t, "updated_at", 0) or 0)))
+                about = conversation_title(t)[:70]
+                print(f"  {n:2}. {when}  {made_by(t):10}  {about or t.id}")
+            if found:
+                print("/history <number> carries on with one (in single mode).")
+            return
+        if not arg.isdigit() or not 1 <= int(arg) <= len(found):
+            print("Use /history to list them, then /history <number>.")
+            return
+        chosen = found[int(arg) - 1]
+        self.save()
+        self.new_conversation("single")
+        self.mode.agent.thread_id = chosen.id  # resumed (with this app's settings) on the next message
+        self.title = conversation_title(chosen)[:80]
+        print(f"Carrying on with '{self.title or chosen.id}' in single mode. Your next message continues it.")
 
     def attach(self, arg: str, image: bool) -> None:
         if not arg:
@@ -997,6 +1100,10 @@ class App:
             print("Nothing is running.")
         elif name == "/undo":
             self.undo()
+        elif name == "/history":
+            self.history(arg)
+        elif name == "/queue":
+            self.queue(arg)
         elif name == "/commit":
             self.commit(arg)
         elif name == "/pr":
@@ -1067,6 +1174,16 @@ class App:
             notice = self.update_notice.take() if self.update_notice else None
             if notice:
                 print(f"{GREEN}* {notice}{RESET}")
+            if self.queued:
+                line = self.queued.popleft()
+                print(f"\n{GREEN}* Next from the queue{f' ({len(self.queued)} more waiting)' if self.queued else ''}: "
+                      f"{line}{RESET}")
+                if line.startswith("/"):
+                    if not self.command(line):
+                        break
+                else:
+                    self.run_task(line)
+                continue
             try:
                 line = self.pump.get(f"\n{CYAN}you>{RESET} ")
             except KeyboardInterrupt:
@@ -1134,11 +1251,18 @@ def main(argv=None) -> int:
                         help="a Codex setting, as in official Codex (for example -c model_verbosity=high)")
     parser.add_argument("--update", action="store_true", help="install the newest version from GitHub, then exit")
     parser.add_argument("--version", action="store_true", help="show the version and check for updates, then exit")
+    parser.add_argument("--selftest", action="store_true",
+                        help="check that the Codex engine still has everything this app uses (no model turn, "
+                             "nothing billed), then exit")
+    parser.add_argument("--quiet", action="store_true", help="with --selftest: print only what failed")
     args = parser.parse_args(argv)
 
     if args.version:
         print_versions()
         return 0
+    if args.selftest:
+        from codex_app import selftest
+        return selftest.main(quiet=args.quiet)
     if args.update:
         # Runs before Codex starts, so the engine can be replaced safely.
         _, message, failed = updater.update_everything()

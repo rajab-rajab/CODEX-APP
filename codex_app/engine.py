@@ -34,6 +34,29 @@ def mcp_servers(codex, thread_id: Optional[str] = None, limit: int = 100) -> lis
             return servers
 
 
+def start_review(codex, thread_id: str, target: dict):
+    """Start Codex's own code review (review/start, what official Codex's /review uses) on a thread and
+    return a TurnHandle to follow it. `target` is {"type": "uncommittedChanges"}, {"type": "baseBranch",
+    "branch": ...}, {"type": "commit", "sha": ...} or {"type": "custom", "instructions": ...}.
+    The turn is subscribed to while it starts, the way the SDK starts normal turns, so no event is missed."""
+    from openai_codex import TurnHandle
+    from openai_codex.generated.v2_all import ReviewStartResponse
+
+    client = codex._client
+    with client._thread_start_lock(thread_id):
+        with client._router.pending_turn(thread_id) as cursors:
+            started = client.request("review/start", {"threadId": thread_id, "target": target, "delivery": "inline"},
+                                     response_model=ReviewStartResponse)
+            subscription = client._router.prepare_turn(started.turn.id, thread_id, cursors, for_handle=True)
+    return TurnHandle(client, thread_id, started.turn.id, _subscription=subscription)
+
+
+def threads(codex, cwd: str, limit: int = 20) -> list:
+    """Codex's own saved conversations for a project folder, newest first, from every Codex client:
+    this app, the official Codex CLI, VS Code and others."""
+    return list(codex.thread_list(cwd=cwd, limit=limit).data or [])
+
+
 def rate_limits(codex):
     """The account's plan and rate-limit use (account/rateLimits/read): a RateLimitSnapshot, or None."""
     return getattr(_request(codex, "account/rateLimits/read", {}, "GetAccountRateLimitsResponse"), "rate_limits", None)

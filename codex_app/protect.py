@@ -140,14 +140,25 @@ def is_secret_path(path) -> bool:
     return bool(_SECRET_FILE.match(parts[-1]))
 
 
+# Words after which a file name is being left out, not read: `Where-Object { $_ -ne '.env' }`,
+# `rg --glob '!.env'`, `--exclude .env`. (Found in a real run: Codex leaving .env out set off the guard.)
+_EXCLUDING = {"-ne", "-notlike", "-notmatch", "-notin", "-notcontains", "-exclude", "--exclude", "--exclude-dir",
+              "--exclude-from", "-x", "-not", "!=", "-i", "--ignore", "--iglob", "-v", "--invert-match"}
+
+
 def secret_in_command(command) -> Optional[str]:
-    """The first secret file a command names, or None."""
+    """The first secret file a command names (and isn't leaving out), or None."""
     if isinstance(command, (list, tuple)):
         command = " ".join(str(c) for c in command)
-    for token in re.split(r"""[\s'"`|;&<>(),=]+""", str(command or "")):
+    previous = ""
+    for token in re.split(r"""[\s'"`|;&<>(),={}]+""", str(command or "")):
         token = token.strip().rstrip(":")
-        if token and not token.startswith("-") and is_secret_path(token):
+        if not token:
+            continue
+        excluded = previous.lower() in _EXCLUDING or token.startswith(("!", ":!", ":(exclude)", "^"))
+        if not excluded and not token.startswith("-") and is_secret_path(token):
             return token
+        previous = token
     return None
 
 

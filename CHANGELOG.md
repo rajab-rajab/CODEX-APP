@@ -2,6 +2,26 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+Safe engine updates, Codex's own review, and help for long sessions.
+
+- **`--selftest`**: checks in a few seconds, without a model turn, that the Codex engine still has
+  everything Codex App uses. `--update` now runs it after installing a new engine and puts the old one
+  back if anything fails (before, it only checked that the engine started).
+- **`/review`** uses Codex's own code review (`review/start`), as official Codex does, and falls back
+  to the app's review instructions if it isn't available. Review and commit-message conversations are
+  kept out of Codex's history.
+- **`/history`**: Codex's conversations for this project from every Codex client, including the official
+  Codex CLI, with who made each; `/history <number>` carries on with one.
+- **Auto-compact** when only 10% of the context is left, and **`/queue <task>`** to line up the next task
+  while Codex works.
+- Fixed: Ctrl+C now really stops Codex; before, the app stopped waiting while Codex carried on in the
+  background, and its work could mix with the next message.
+- Fixed: the secret guard no longer stops commands that leave secret files out (such as
+  `Where-Object { $_ -ne '.env' }`), and a turn that can't be wound back after a guard stop now gets
+  a fresh conversation, so what Codex read is never sent again.
+
 ## 1.5.0 (2026-11-24)
 
 More reliable, and the work goes straight to git.

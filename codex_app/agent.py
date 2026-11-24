@@ -134,7 +134,7 @@ class CodexAgent:
     def __init__(self, codex, *, name: str, model: str, effort: str, sandbox, approval_mode,
                  instructions: str, cwd: Path, on_event: Optional[EventHandler] = None,
                  config: Optional[dict] = None, thread_cls=None, quiet: bool = False,
-                 secret_guard: Optional[Callable] = None):
+                 secret_guard: Optional[Callable] = None, ephemeral: bool = False):
         self.codex = codex
         self.name = name
         self.model = model
@@ -157,6 +157,7 @@ class CodexAgent:
         self._model_changed = False
         # secret_guard(item) -> why, or None: checks each command and edit as Codex starts it (protect.py).
         self.secret_guard = secret_guard
+        self.ephemeral = ephemeral          # helper conversations (reviews, commit messages) aren't saved
         self.guard_hits: list[str] = []
         # (turn id, diff) of every turn this agent ran, oldest first: what /undo goes back through.
         self.turns_log: list[tuple] = []
@@ -182,6 +183,8 @@ class CodexAgent:
             self.thread = approvals.open_thread(self.codex, self.thread_cls, self.thread_id, **self._common())
         elif self.thread_id:
             self.thread = self.codex.thread_resume(self.thread_id, approval_mode=self.approval_mode, **self._common())
+        elif self.ephemeral:
+            self.thread = self.codex.thread_start(approval_mode=self.approval_mode, ephemeral=True, **self._common())
         else:
             self.thread = self.codex.thread_start(approval_mode=self.approval_mode, **self._common())
         self.thread_id = self.thread.id
@@ -192,6 +195,17 @@ class CodexAgent:
         self.thread = None
         self.thread_id = None
         self.turns_log = []
+
+    def discard(self) -> None:
+        """Archive this agent's conversation, so it stays out of Codex's history (/history, the official
+        Codex CLI's resume list), and start afresh next time. For helper conversations: reviews, commit
+        messages."""
+        if self.thread_id:
+            try:
+                self.codex.thread_archive(self.thread_id)
+            except Exception:
+                pass
+        self.reset()
 
     def undo_turns(self, keep: int) -> None:
         """Take every turn after the first `keep` out of the conversation (for /undo)."""
@@ -302,6 +316,9 @@ class CodexAgent:
                 answer = self._consume(turn.stream(), show_text=output_schema is None,
                                        stream_text=not (self.quiet if quiet is None else quiet),
                                        turn_id=getattr(turn, "id", None))
+            except KeyboardInterrupt:
+                self.interrupt()  # tell Codex to stop now, while the turn is still known
+                raise
             finally:
                 self._turn = None
             if self.last_status == "failed" and self.last_failure in RETRYABLE_FAILURES and attempt < self.retries:
@@ -318,6 +335,20 @@ class CodexAgent:
                              "Ctrl+C stops.")
         self.sleep(delay)
 
+    def run_review(self, target: dict) -> str:
+        """Codex's own code review (what official Codex's /review uses) on this agent's thread.
+        Returns the review."""
+        self._ensure_thread()
+        self._turn = turn = engine.start_review(self.codex, self.thread_id, target)
+        try:
+            return self._consume(turn.stream(), show_text=True, stream_text=not self.quiet,
+                                 turn_id=getattr(turn, "id", None))
+        except KeyboardInterrupt:
+            self.interrupt()
+            raise
+        finally:
+            self._turn = None
+
     def run_goal(self, objective: str, token_budget: Optional[int] = None) -> str:
         """Official Codex's /goal: Codex keeps working, over as many turns as it needs, until the goal is
         done, blocked, or out of budget. Returns its final answer."""
@@ -330,6 +361,9 @@ class CodexAgent:
         try:
             return self._consume(iter(goal), show_text=True, stream_text=not self.quiet,
                                  turn_id=getattr(goal, "first_turn_id", None))
+        except KeyboardInterrupt:
+            self.interrupt()  # pause the goal and stop its turn
+            raise
         finally:
             self._goal = None
 
@@ -351,8 +385,12 @@ class CodexAgent:
             engine.revert(self.codex, self.thread_id, turn_id)
             self._emit("notice", "That turn was taken out of the conversation, so what Codex read isn't sent "
                                  "to OpenAI again. Files it changed are as they were left (/undo puts them back).")
-        except Exception as e:
-            self._emit("notice", f"Couldn't take the turn out of the conversation ({e}); /new starts fresh.")
+        except Exception:
+            # Some turns (a review, for example) can't be wound back: drop the conversation instead, so what
+            # Codex read is never sent again. The next message starts a fresh one.
+            self.reset()
+            self._emit("notice", f"{self.name.capitalize()} starts a fresh conversation from the next message, "
+                                 "so what Codex read isn't sent to OpenAI again.")
 
     def _consume(self, stream, show_text: bool, stream_text: bool, turn_id=None) -> str:
         answers, status, error, streamed = [], None, None, False
@@ -415,9 +453,16 @@ class CodexAgent:
         kind = getattr(item, "type", "")
         if kind == "agentMessage":
             text = getattr(item, "text", "") or ""
+            repeat = bool(text.strip()) and text.strip() in (a.strip() for a in answers)  # a review shown already
             answers.append(text)
-            if not streamed and text:
+            if not streamed and text and not repeat:
                 self._emit("text", text)
+        elif kind == "exitedReviewMode":  # Codex's own review: the findings
+            text = getattr(item, "review", "") or ""
+            if text.strip() and text.strip() not in (a.strip() for a in answers):
+                answers.append(text)
+                if not streamed:  # it often arrives as the answer too; show it once
+                    self._emit("text", text)
         elif kind == "reasoning":
             summary = " ".join(getattr(item, "summary", None) or [])
             if summary.strip():
