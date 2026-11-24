@@ -148,10 +148,14 @@ Most of these are the same as official Codex's.
 | `/permission <mode>` (or `/permissions`) | What Codex may change (see below) |
 | `/approval <mode>` (or `/approvals`) | What happens when Codex wants to leave the sandbox (see below) |
 | `/status` | Models, permission, approval, account, versions, tokens and context left |
+| `/undo` | Put the files **and** the conversation back to before your last message (again to go further back). Shows what it will change and asks first |
 | `/diff` | The project's git changes, including new files |
 | `/review [what]` | A read-only code review in its own conversation: `uncommitted` (default), `branch <base>`, `commit <sha>`, or your own instructions |
 | `/mention <file>`, or `@path` in a message | Attach a file to your message |
 | `/image <file>` | Attach an image to your next message |
+| `/skills`, or `$name` in a message | List the skills Codex can use; `$name` attaches one to your message |
+| `/mcp` | List the MCP servers (external tools such as GitHub or databases) Codex is set up with, their status and tools |
+| `/secrets [on\|off]` | List secret files in the project; turn the secret guard on or off |
 | `/compact` | Summarise the conversation so far, to free up context |
 | `/init` | Writes an `AGENTS.md` describing your project. Codex reads it automatically |
 | `/models` | Lists the models Codex can use |
@@ -210,10 +214,32 @@ With `full` nothing stops Codex for real except instruction 4, so keep `workspac
 
 ## Secret files
 
-Codex is told never to read or change `.env` files (except `.env.example`), keys, databases or
-`data/` folders, which matters for your site. This is an instruction to Codex, not a hard block.
-Codex's sandbox controls *writing*, not *reading*. For a project that holds real secrets, keep
-them out of the project folder, or use Claude App, which blocks those files in code.
+Secret files are `.env` files (not `.env.example`), keys (`*.pem`, `*.key`, `id_rsa` ...), credentials
+(`credentials.json`, `secrets.*`, `.npmrc`, `.netrc` ...), databases (`*.db`, `*.sqlite`) and anything
+in a `data/`, `.ssh/` or `.aws/` folder. Codex's sandbox controls *writing*, not *reading*, so the app
+keeps Codex away from them in four ways:
+
+1. **Codex is told** never to read, print or change them.
+2. **The secret guard** watches every command and edit as Codex starts it. If one reads or changes a
+   secret file, the turn is stopped at once and **taken out of the conversation**, so what Codex read
+   is never sent to OpenAI with later messages. `/secrets off` turns it off (`CODEX_APP_SECRET_GUARD=no`).
+3. **Requests to leave the sandbox** that touch a secret file are refused without asking.
+4. **At start** the app lists the secret files inside the project.
+
+The guard acts the moment a command starts, so a very fast command may still finish first. For a
+project with real secrets the safest place for them is still outside the project folder.
+
+## Undo
+
+`/undo` puts back both the files and Codex's conversation as they were before your last message;
+`/undo` again goes further back. It lists the files it will change and asks first.
+
+- In a git project the app takes a snapshot of every file before each message, the way official Codex's
+  undo works. Snapshots are private git objects: your index, branches, stash and history are never
+  touched, and nothing shows up in `git status`. Files your `.gitignore` leaves out (such as `.env` or
+  `node_modules`) are never changed by `/undo`.
+- Without git, `/undo` reverses the changes Codex reported, and refuses if the files have changed since.
+- Undo works within one conversation: `/new`, `/mode` and `/resume` start afresh.
 
 ## Saved conversations
 
@@ -237,6 +263,7 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_PROFILE` | `auto` | Task profile: `auto`, `coding`, `chat`, `maths` |
 | `CODEX_APP_POWER` | `normal` | Power level: `normal`, `high`, `max` |
 | `CODEX_APP_TEAM_SIZE` | `3` | Team mode: workers at the same time (1 to 8) |
+| `CODEX_APP_SECRET_GUARD` | `yes` | Stop a turn the moment Codex starts to read or change a secret file |
 | `CODEX_APP_MAX_REVIEW_ROUNDS` | `2` | How many times the planner may send work back |
 | `CODEX_APP_UPDATE_CHECK` | `yes` | Look for a new app version once a day at start |
 
@@ -298,6 +325,8 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/protect.py` | Keeping Codex away from the system disk and system files |
 | `codex_app/profiles.py` | Task profiles (coding, chat, maths) and power presets |
 | `codex_app/goals.py` | Goal mode: Codex working on its own until a goal is done |
+| `codex_app/undo.py` | File snapshots and restoring them for `/undo` |
+| `codex_app/engine.py` | Engine requests the SDK has no method for: undoing turns, MCP servers, skills |
 | `codex_app/config.py` | Settings, permissions, prices |
 | `codex_app/sessions.py` | Saving and resuming conversations |
 | `codex_app/updater.py` | Updating Codex App from GitHub and the Codex engine from PyPI |

@@ -65,7 +65,9 @@ class FakeThread:
     def turn(self, text, **options):
         with FAKE_LOCK:
             self.codex.turns.append({"thread": self.id, "text": text, "options": options, "start": self.options})
-            return FakeTurn(self.codex.script[self.id].pop(0))
+            turn = FakeTurn(self.codex.script[self.id].pop(0))
+            turn.id = f"{self.id}_turn{len(self.codex.turns)}"
+            return turn
 
     def compact(self):
         self.codex.compacted.append(self.id)

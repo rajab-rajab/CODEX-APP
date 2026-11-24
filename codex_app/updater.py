@@ -51,8 +51,10 @@ class UpdateStatus:
 
 
 def _git(app_dir: Path, *args, timeout: int = 30) -> subprocess.CompletedProcess:
+    # stdin=DEVNULL: the background update check runs while the app reads your typing; on Windows a git
+    # that inherits that input can hang at start.
     return subprocess.run(["git", *args], cwd=app_dir, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=timeout)
+                          encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
 
 
 def _version_in(text: str) -> str:
@@ -132,7 +134,8 @@ def apply(app_dir: Path = APP_DIR, install_packages: bool = True,
     new_requirements = _git(app_dir, "rev-parse", "HEAD:requirements.txt").stdout.strip()
     if install_packages and new_requirements != old_requirements:
         installed = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r",
-                                    str(app_dir / "requirements.txt")], capture_output=True, text=True)
+                                    str(app_dir / "requirements.txt")], capture_output=True, text=True,
+                                   stdin=subprocess.DEVNULL)
         if installed.returncode == 0:
             lines.append("The required packages were updated too.")
         else:
@@ -227,7 +230,8 @@ def _engine_starts() -> bool:
     """Start the installed Codex engine once in a separate process, to check it works."""
     probe = "import openai_codex as s\nwith s.Codex() as c:\n    c.metadata\n"
     try:
-        return subprocess.run([sys.executable, "-c", probe], capture_output=True, timeout=120).returncode == 0
+        return subprocess.run([sys.executable, "-c", probe], capture_output=True, timeout=120,
+                              stdin=subprocess.DEVNULL).returncode == 0
     except subprocess.TimeoutExpired:
         return False
 

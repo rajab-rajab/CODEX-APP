@@ -18,7 +18,7 @@ import sys
 import threading
 from pathlib import Path
 
-from codex_app import __version__, approvals, profiles, protect, sessions, updater
+from codex_app import __version__, approvals, engine, profiles, protect, sessions, undo, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
 from codex_app.modes import INIT_TASK, MODES, make_reviewer, project_instructions, review_task
@@ -42,11 +42,16 @@ HELP = """Commands (most are the same as official Codex's):
   /approval <mode>        deny_all | auto_review | ask  (what happens when Codex wants to leave
                           the sandbox; starts a new conversation)
   /status                 models, permission, account, versions, tokens and context left
+  /undo                   put back the files and the conversation as they were before your last
+                          message (again to go further back)
   /diff                   the project's git changes, including new files
   /review [what]          a read-only code review: uncommitted (default), branch <base>,
                           commit <sha>, or your own instructions
   /mention <file>         attach a file to your next message (or write @path in a message)
   /image <file>           attach an image to your next message
+  /skills                 list the skills Codex can use; write $name in a message to use one
+  /mcp                    list the MCP servers (external tools) Codex is set up with
+  /secrets [on|off]       list secret files in the project; turn the secret guard on or off
   /compact                summarise the conversation so far, to free up context
   /init                   write an AGENTS.md that describes this project
   /models                 list the models Codex can use
@@ -193,8 +198,9 @@ def print_versions() -> None:
 def git_changes(root: Path) -> str:
     """What official Codex's /diff shows: the git diff of the project, including untracked files."""
     def git(*args):
+        # stdin=DEVNULL: on Windows git can hang at start if it inherits the input the steering thread reads.
         return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
-                              encoding="utf-8", errors="replace")
+                              encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=60)
     try:
         if git("rev-parse", "--is-inside-work-tree").returncode != 0:
             return "This project is not a git repository, so there is no diff to show."
@@ -271,6 +277,9 @@ class App:
         self._busy = False      # a task or goal is running
         self._answers = None    # a queue while an approval question waits for its answer
         self._steer_hint = True
+        self.undo_points = []   # one per message: what /undo goes back to (newest last)
+        self._skills = None     # name -> path, once listed
+        self._last_message = ""
         self.codex = codex
         self.sdk = sdk
         self.root = Path(root)
@@ -338,6 +347,7 @@ class App:
         return True
 
     def new_conversation(self, mode_name: str) -> None:
+        self.undo_points = []  # /undo works within one conversation
         self.mode = MODES[mode_name](self.codex, self.sdk, self.root, self.settings, on_event=self.screen.event)
         self.session_path = sessions.new_session_path(mode_name)
         self.title = ""
@@ -373,6 +383,8 @@ class App:
         if self.pump is not None and self._steer_hint:
             print(f"{GREY}  (type to steer Codex while it works, /stop to stop it){RESET}")
             self._steer_hint = False
+        point = {"mode": self.mode, "title": self._last_message, "tree": undo.snapshot(self.root),
+                 "marks": {a.name: len(a.turns_log) for a in self.mode.agents()}}
         self._busy = True
         try:
             work()
@@ -384,12 +396,15 @@ class App:
         finally:
             self._busy = False
             self.screen.finish()
+            if any(len(a.turns_log) > point["marks"].get(a.name, 0) for a in self.mode.agents()):
+                self.undo_points.append(point)
             self.save()
         self.status_line()
 
     def run_task(self, task: str, attachments=()) -> None:
         self.title = self.title or task[:80]
-        attachments = [*self.pending, *attachments, *mentions_in(task, self.root, self.sdk)]
+        self._last_message = task
+        attachments = [*self.pending, *attachments, *mentions_in(task, self.root, self.sdk), *self.skills_in(task)]
         self.pending = []
         profile = profiles.resolve(self.settings.profile, task)
         if profile != "coding":
@@ -409,6 +424,7 @@ class App:
             print("Use /goal <what Codex should achieve>, for example /goal make all the tests pass")
             return
         self.title = self.title or f"goal: {arg[:74]}"
+        self._last_message = f"/goal {arg}"
         print(f"{GREEN}* Goal set{f' (budget about {budget:,} tokens)' if budget else ''}. Codex works on its own "
               f"until it's done; type to steer it, /stop to pause it.{RESET}")
         self._run(lambda: self.mode.run_goal(arg.strip(), budget))
@@ -469,6 +485,134 @@ class App:
         self.reviewer = None
         print(f"Power is now '{level}': {self.describe()}. It costs more tokens the higher it goes."
               if level != "normal" else f"Power is back to 'normal': {self.describe()}.")
+
+    def undo(self) -> None:
+        """Official Codex's undo: the files and the conversation go back to before the last message."""
+        if not self.undo_points:
+            print("Nothing to undo in this conversation.")
+            return
+        point = self.undo_points[-1]
+        if point["mode"] is not self.mode:
+            self.undo_points.clear()
+            print("Nothing to undo in this conversation.")
+            return
+        later = {a.name: a.turns_log[point["marks"].get(a.name, 0):] for a in self.mode.agents()}
+        if point["tree"]:
+            files = undo.changes(self.root, point["tree"])
+            plan = [f"  {what:10} {path}" for what, path in files]
+        else:
+            diffs = [d for turns in later.values() for _, d in turns if d]
+            files = diffs
+            plan = [f"  reverse the changes Codex reported ({len(diffs)} diff{'s' if len(diffs) != 1 else ''}; "
+                    "no git, so files changed in other ways stay as they are)"] if diffs else []
+        print(f"Undo your last message: {point['title'][:100]!r}?")
+        if plan:
+            print("Files:\n" + "\n".join(plan[:20]) + (f"\n  ... and {len(plan) - 20} more" if len(plan) > 20 else ""))
+        else:
+            print("Files: nothing to change.")
+        print("Codex's conversation goes back to before that message too.")
+        if self.ask("Undo it? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Nothing was undone.")
+            return
+        try:
+            if point["tree"]:
+                undo.restore(self.root, point["tree"])
+            elif files:
+                undo.reverse_diffs(self.root, files)
+        except Exception as e:
+            print(f"{RED}The files couldn't be put back: {e}. Nothing was undone.{RESET}")
+            return
+        problems = []
+        for agent in self.mode.agents():
+            try:
+                agent.undo_turns(point["marks"].get(agent.name, 0))
+            except Exception as e:
+                problems.append(f"{agent.name}: {e}")
+        self.undo_points.pop()
+        self.save()
+        print(f"{GREEN}* Undone: the files and the conversation are back to before that message.{RESET}"
+              if not problems else
+              f"{YELLOW}The files are back, but the conversation couldn't be wound back ({'; '.join(problems)}). "
+              f"/new starts a fresh one.{RESET}")
+
+    def skills_in(self, text: str) -> list:
+        """$name in a message attaches that skill, as in official Codex."""
+        names = re.findall(r"(?<![\w$])\$([A-Za-z][\w.-]*)", text or "")
+        if not names:
+            return []
+        if self._skills is None:
+            try:
+                found, _ = engine.skills(self.codex, str(self.root))
+                self._skills = {str(k.name): str(k.path) for k in found if getattr(k, "enabled", True)}
+            except Exception:
+                self._skills = {}
+        return [self.sdk.SkillInput(n, self._skills[n]) for n in dict.fromkeys(names) if n in self._skills]
+
+    def show_skills(self) -> None:
+        try:
+            found, errors = engine.skills(self.codex, str(self.root), reload=True)
+        except Exception as e:
+            print(f"{RED}Could not list skills: {e}{RESET}")
+            return
+        self._skills = {str(k.name): str(k.path) for k in found if getattr(k, "enabled", True)}
+        if not found:
+            print("Codex has no skills for this project yet. A skill is a folder with a SKILL.md that tells "
+                  "Codex how to do a kind of task; see the official Codex docs on skills.")
+        for k in sorted(found, key=lambda k: str(k.name)):
+            scope = getattr(getattr(k, "scope", None), "value", getattr(k, "scope", ""))
+            off = "" if getattr(k, "enabled", True) else "  (turned off)"
+            about = " ".join(str(getattr(k, "short_description", None) or k.description or "").split())
+            about = about[:90] + ("..." if len(about) > 90 else "")
+            print(f"  ${k.name:24} {about}  [{scope}]{off}")
+        for e in errors:
+            print(f"{YELLOW}  could not load {e.path}: {e.message}{RESET}")
+        if found:
+            print("Write $name in a message to have Codex use that skill.")
+
+    def show_mcp(self) -> None:
+        thread_id = next((a.thread_id for a in self.mode.agents() if a.thread_id), None)
+        try:
+            servers = engine.mcp_servers(self.codex, thread_id)
+        except Exception as e:
+            print(f"{RED}Could not list MCP servers: {e}{RESET}")
+            return
+        if not servers:
+            print("No MCP servers are set up. MCP servers give Codex extra tools (GitHub, databases, browsers ...).\n"
+                  "Add one to Codex's config file, ~/.codex/config.toml, for example:\n"
+                  "  [mcp_servers.NAME]\n  command = \"npx\"\n  args = [\"-y\", \"package-name\"]\n"
+                  "or for one run: -c mcp_servers.NAME.command=... Then restart the app.")
+            return
+        for server in servers:
+            status = getattr(getattr(server, "runtime_status", None), "value", None) or "unknown"
+            auth = getattr(getattr(server, "auth_status", None), "value", "")
+            tools = sorted((server.tools or {}).keys())
+            print(f"  {server.name}: {status}" + (f", sign-in: {auth}" if auth not in ("", "unknown", "unsupported") else "")
+                  + f", {len(tools)} tool{'s' if len(tools) != 1 else ''}")
+            if tools:
+                print("    " + ", ".join(tools[:30]) + (" ..." if len(tools) > 30 else ""))
+            if getattr(server, "tools_error", None):
+                print(f"{YELLOW}    {server.tools_error}{RESET}")
+
+    def warn_secrets(self) -> None:
+        found = protect.find_secret_files(self.root)
+        if found:
+            print(f"{YELLOW}Secret files in this project: {', '.join(found[:6])}{' ...' if len(found) > 6 else ''}\n"
+                  f"Codex is told never to touch them"
+                  f"{', and the secret guard stops it if it starts to' if self.settings.secret_guard else ''}. "
+                  f"For full safety keep them outside the project folder. (/secrets lists them){RESET}")
+
+    def secrets(self, arg: str) -> None:
+        if arg in ("on", "off"):
+            self.settings.secret_guard = arg == "on"
+            print("The secret guard is on: a turn stops the moment Codex starts to read or change a secret file."
+                  if arg == "on" else f"{YELLOW}The secret guard is off. Codex is still told not to touch secret "
+                                      f"files, but nothing stops it.{RESET}")
+            return
+        found = protect.find_secret_files(self.root, limit=200)
+        print("Secret files in this project:" if found else "No secret files found in this project.")
+        for path in found:
+            print(f"  {path}")
+        print(f"Secret guard: {'on' if self.settings.secret_guard else 'off'} (/secrets on|off)")
 
     def set_profile(self, arg: str) -> None:
         if arg not in profiles.PROFILES:
@@ -662,6 +806,14 @@ class App:
             self.set_profile(arg)
         elif name in ("/stop", "/interrupt"):
             print("Nothing is running.")
+        elif name == "/undo":
+            self.undo()
+        elif name == "/skills":
+            self.show_skills()
+        elif name == "/mcp":
+            self.show_mcp()
+        elif name == "/secrets":
+            self.secrets(arg)
         elif name == "/init":
             self.run_task(INIT_TASK)
         elif name == "/login":
@@ -711,6 +863,7 @@ class App:
               "Type a task, or /help. Write @path to attach a file.")
         if self.settings.update_check and self.update_notice is None:
             self.update_notice = updater.BackgroundNotice(updater.APP_DIR, APP_HOME)
+        self.warn_secrets()
         if self.pump is None:
             self.pump = InputPump(self)
         while True:
@@ -875,6 +1028,8 @@ def main(argv=None) -> int:
                 app.resume(*last)
             else:
                 print("No saved conversation for this project yet; starting a new one.")
+        if args.task:
+            app.warn_secrets()
         if args.task and args.goal:
             app.pending = images
             app.goal(f"--budget {budget} {' '.join(args.task)}" if budget else " ".join(args.task))
