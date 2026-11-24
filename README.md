@@ -387,7 +387,8 @@ py main.py --update
 It updates the app first, then installs the newest Codex engine this app version accepts. Run it
 while the app is closed: the engine can't be replaced while Codex is running.
 
-`/update` inside the app updates the app and says whether a new engine is waiting.
+`/update` inside the app updates the app and says whether a new engine is waiting. It, `--version` and
+the daily notice show what's new: the CHANGELOG entries of every version between yours and the new one.
 `/version` (or `py main.py --version`) shows both versions and checks for newer ones.
 
 **How engine updates are kept safe:**
@@ -426,6 +427,9 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/export.py` | `/export`: a conversation as Markdown |
 | `codex_app/costs.py` | `/prices` and `/stats`: model prices and the usage log |
 | `.github/workflows/tests.yml` | The tests on GitHub, on Windows and Linux |
+| `.github/workflows/engine-watch.yml`, `.github/scripts/engine_watch.py` | The weekly check of the newest Codex engine |
+| `.github/workflows/release.yml` | GitHub Releases with CHANGELOG notes |
+| `tests/conftest.py` | Throwaway git repositories, built once per test run |
 | `codex_app/engine.py` | Engine requests the SDK has no method for: undoing turns, MCP servers, skills |
 | `codex_app/config.py` | Settings, permissions, prices |
 | `codex_app/sessions.py` | Saving and resuming conversations |
@@ -438,9 +442,24 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 py -m pytest -q
 ```
 
-The tests use a fake Codex: no key is needed and nothing is billed. GitHub runs them on Windows and
-Linux for every pull request and every push to `main` (`.github/workflows/tests.yml`), together with the
-offline part of `--selftest`.
+The tests use a fake Codex: no key is needed and nothing is billed. Repositories the tests need are
+built once per run and copied for each test, so the suite takes about 2 minutes on Windows instead of 3.
+
+Three GitHub workflows keep the app safe:
+
+| Workflow | When | What it does |
+|---|---|---|
+| `tests.yml` | Every pull request and push to `main` | All tests on Windows and Linux, the offline part of `--selftest`, and a coverage report (which code no test runs) on Linux |
+| `engine-watch.yml` | Every Monday, or by hand | Installs the newest Codex engine, even one the app doesn't accept yet, and runs all tests and the offline self-test with it on Windows and Linux. If they pass and the engine is outside the accepted range, it opens a pull request that widens the range up to the next minor version. If they fail, it opens an issue |
+| `release.yml` | A push to `main` that raises the version | Publishes a GitHub Release `vX.Y.Z` with that version's CHANGELOG entry as its notes |
+
+`main` is protected on GitHub: a pull request can only be merged once both test jobs (`windows-latest`
+and `ubuntu-latest`) have passed. As the repository's admin you can still override it.
+
+A pull request opened by `engine-watch.yml` doesn't run `tests.yml` itself (GitHub doesn't start workflows
+from its own token); the engine-watch run it links to has already run them with the new engine. Before
+merging it, run `py main.py --selftest` on a PC with that engine: the live checks need a signed-in Codex,
+so they can't run on GitHub.
 
 ## License
 

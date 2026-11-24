@@ -1,0 +1,112 @@
+# Every Monday: try the newest Codex engine (openai-codex on PyPI), even one Codex App doesn't accept
+# yet, on Windows and Linux. All tests plus the offline self-test must pass with it.
+#  - Passes and outside the accepted range: opens a pull request that widens the range in
+#    requirements.txt (up to the next minor version).
+#  - Fails: opens an issue saying which engine version broke what.
+#  - Already accepted and passing: nothing to do.
+# Uses the fake Codex: no OpenAI key, nothing billed. Can also be started by hand (Actions -> Run workflow).
+name: engine-watch
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  newest:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.newest.outputs.version }}
+      accepted: ${{ steps.newest.outputs.accepted }}
+      range: ${{ steps.newest.outputs.range }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install packaging
+      - id: newest
+        run: python .github/scripts/engine_watch.py newest >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: newest
+    name: test ${{ needs.newest.outputs.version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install with the newest engine
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install "openai-codex==${{ needs.newest.outputs.version }}"
+      - name: Git identity for the tests' throwaway repositories
+        run: |
+          git config --global user.name "Codex App tests"
+          git config --global user.email "tests@example.com"
+          git config --global init.defaultBranch main
+      - name: Tests
+        run: python -m pytest -q
+      - name: Self-test (offline checks)
+        run: python main.py --selftest --offline
+
+  widen:
+    needs: [newest, test]
+    if: needs.newest.outputs.accepted == 'false'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.newest.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install packaging
+      - name: Open a pull request that accepts the new engine
+        run: |
+          branch="engine/openai-codex-$VERSION"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "A pull request for $VERSION is already open."; exit 0
+          fi
+          python .github/scripts/engine_watch.py widen "$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Accept Codex engine $VERSION"
+          git push -u origin "$branch"
+          gh pr create --base main --head "$branch" --title "Accept Codex engine $VERSION" --body \
+            "The weekly engine check installed openai-codex $VERSION, which requirements.txt didn't accept yet (\`${{ needs.newest.outputs.range }}\`). All tests and the offline self-test passed with it on Windows and Linux: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          This widens the range up to the next minor version. Before merging, run \`py main.py --selftest\` on a PC with $VERSION installed: the live checks need a signed-in Codex, so they don't run on GitHub. After merging, raise the app's version so installed copies pick it up with \`py main.py --update\`."
+
+  report:
+    needs: [newest, test]
+    if: failure() && needs.newest.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.newest.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open an issue (once per version)
+        run: |
+          title="Codex engine $VERSION breaks Codex App's tests"
+          if gh issue list --state open --search "$title in:title" --json number --jq length | grep -qv '^0$'; then
+            echo "Already reported."; exit 0
+          fi
+          gh issue create --title "$title" --body \
+            "The weekly engine check installed openai-codex $VERSION and the tests or the offline self-test failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Accepted range now: \`${{ needs.newest.outputs.range }}\`. $( [ '${{ needs.newest.outputs.accepted }}' = 'true' ] && echo 'This version is INSIDE the accepted range, so py main.py --update would install it: its self-test should put the old engine back, but check soon.' || echo 'It is outside the accepted range, so nobody gets it until the range is widened.' )"

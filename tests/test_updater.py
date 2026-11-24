@@ -29,20 +29,26 @@ def commit(folder: Path, message: str):
     git(folder, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", message)
 
 
-@pytest.fixture
-def repos(tmp_path):
-    """(developer copy, installed copy), both cloned from a bare 'github' repo at version 1.0.0."""
-    github = tmp_path / "github.git"
-    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(github))
-    dev = tmp_path / "dev"
-    git(tmp_path, "clone", "-q", str(github), str(dev))
+def _build_repos(base: Path):
+    github = base / "github.git"
+    git(base, "init", "-q", "--bare", "-b", "main", str(github))
+    dev = base / "dev"
+    git(base, "clone", "-q", str(github), str(dev))
     git(dev, "checkout", "-q", "-b", "main")
     write_app(dev, "1.0.0")
     commit(dev, "First version")
+    git(dev, "remote", "set-url", "origin", "../github.git")  # relative, so copies push to their own copy
     git(dev, "push", "-q", "-u", "origin", "main")
-    installed = tmp_path / "installed"
-    git(tmp_path, "clone", "-q", str(github), str(installed))
-    return dev, installed
+    installed = base / "installed"
+    git(base, "clone", "-q", str(github), str(installed))
+    git(installed, "remote", "set-url", "origin", "../github.git")
+
+
+@pytest.fixture
+def repos(tmp_path, git_template):
+    """(developer copy, installed copy), both cloned from a bare 'github' repo at version 1.0.0."""
+    base = git_template("updater", _build_repos, tmp_path)
+    return base / "dev", base / "installed"
 
 
 def publish(dev: Path, version: str, message: str, requirements: str = "anthropic\n"):
@@ -297,3 +303,54 @@ def test_background_notice_survives_a_crash(tmp_path, monkeypatch):
         raise RuntimeError("boom")
     monkeypatch.setattr(updater, "gather_notice", broken)
     assert updater.BackgroundNotice(tmp_path, tmp_path / "home").take(wait=5) is None
+
+
+# --- what's new, from the CHANGELOG ---------------------------------------------------------------------
+
+CHANGELOG = """# Changelog
+
+## Unreleased
+
+- Not out yet.
+
+## 1.2.0 (2026-12-01)
+
+Faster.
+
+- **Faster start**: about 4 s
+  instead of 10 s.
+- Fewer tokens.
+
+## 1.1.0 (2026-11-30)
+
+- New `/undo`.
+
+## 1.0.0 (2026-11-01)
+
+- First version.
+"""
+
+
+def test_changelog_between():
+    assert updater.changelog_between(CHANGELOG, "1.0.0", "1.2.0") == [
+        "1.2.0: Faster start: about 4 s instead of 10 s.", "1.2.0: Fewer tokens.", "1.1.0: New `/undo`."]
+    assert updater.changelog_between(CHANGELOG, "1.1.0", "1.2.0")[-1] == "1.2.0: Fewer tokens."
+    assert updater.changelog_between(CHANGELOG, "1.2.0", "1.2.0") == []
+    assert updater.changelog_between("no headings", "1.0.0", "2.0.0") == []
+
+
+def test_changelog_section():
+    assert updater.changelog_section(CHANGELOG, "1.1.0") == "- New `/undo`."
+    assert updater.changelog_section(CHANGELOG, "9.9.9") == ""
+
+
+def test_update_shows_the_changelog(repos, tmp_path):
+    dev, installed = repos
+    (dev / "CHANGELOG.md").write_text(CHANGELOG, encoding="utf-8")
+    publish(dev, "1.2.0", "Release 1.2.0")
+    status = updater.check(installed)
+    assert status.notes[0] == "1.2.0: Faster start: about 4 s instead of 10 s." and len(status.notes) == 3
+    notice = updater.due_notice(installed, tmp_path / "home", now=1_000_000, engine=NO_ENGINE_UPDATE)
+    assert "1.0.0 -> 1.2.0" in notice and "  - 1.2.0: Faster start" in notice
+    updated, message = updater.apply(installed, install_packages=False)
+    assert updated and "  - 1.1.0: New `/undo`." in message

@@ -30,18 +30,19 @@ def git(cwd, *args):
     return done.stdout
 
 
-@pytest.fixture
-def repo(tmp_path):
-    """A git project with a.txt and c.txt committed, and .env ignored."""
-    root = tmp_path / "site"
-    root.mkdir()
+def _build_site(root: Path):
     git(root, "init", "-q")
     (root / "a.txt").write_text("a1\n", encoding="utf-8")
     (root / "c.txt").write_text("c1\n", encoding="utf-8")
     (root / ".gitignore").write_text(".env\n", encoding="utf-8")
     git(root, "add", "-A")
     git(root, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "-m", "start")
-    return root
+
+
+@pytest.fixture
+def repo(tmp_path, git_template):
+    """A git project with a.txt and c.txt committed, and .env ignored."""
+    return git_template("site3", _build_site, tmp_path)
 
 
 class FakeClient:

@@ -180,3 +180,25 @@ def test_export_command_writes_the_file(tmp_path, capsys, monkeypatch):
     assert "### You\n\nsay hello" in written and "### Codex\n\nhello there" in written
     app.command("/export")
     assert list((config.APP_HOME / "exports").glob("*.md"))  # the default place
+
+
+# --- the GitHub helpers --------------------------------------------------------------------------------
+
+def test_engine_watch_widens_to_the_next_minor_version():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "engine_watch", Path(__file__).resolve().parents[1] / ".github" / "scripts" / "engine_watch.py")
+    watch = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(watch)
+    from packaging.version import Version
+    assert watch.widened("openai-codex>=0.171,<0.200", Version("0.205.3")) == "openai-codex>=0.171,<0.206"
+    assert watch.widened("openai-codex<0.200", Version("1.2.0")) == "openai-codex<1.3"
+    assert watch.requirement_line("# engine\nopenai-codex>=0.171,<0.200  # range\npytest\n") == "openai-codex>=0.171,<0.200"
+
+
+def test_workflows_are_valid_yaml():
+    yaml = pytest.importorskip("yaml")
+    folder = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    names = {f.name: yaml.safe_load(f.read_text(encoding="utf-8")) for f in folder.glob("*.yml")}
+    assert {"tests.yml", "engine-watch.yml", "release.yml"} <= set(names)
+    assert set(names["engine-watch.yml"]["jobs"]) == {"newest", "test", "widen", "report"}

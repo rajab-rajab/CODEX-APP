@@ -2,6 +2,18 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+New engines are tested before you get them, and every update says what's new.
+
+- **Weekly engine check on GitHub**: every Monday the newest Codex engine is installed and all tests
+  and the offline self-test run with it on Windows and Linux. If it passes and the app doesn't accept
+  it yet, a pull request widens the accepted range; if it fails, an issue says what broke.
+- **What's new**: `/update`, `--version` and the daily notice show the CHANGELOG entries of every
+  version between yours and the new one, instead of commit titles.
+- **GitHub Releases**: raising the version publishes a release with its CHANGELOG notes.
+- **Faster tests** (about 2 minutes instead of 3 on Windows) and a coverage report on GitHub.
+
 ## 1.7.0 (2026-11-24)
 
 Checked on every change, scriptable, and real costs.
