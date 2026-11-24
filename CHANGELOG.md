@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.4.0 (2026-11-24)
 
 Safer and more capable: undo, a secret guard, and Codex's tools and skills.
 
