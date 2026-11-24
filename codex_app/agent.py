@@ -4,6 +4,7 @@ Codex itself (github.com/openai/codex) does the work: it reads files, runs comma
 inside its sandbox. This class starts or resumes the thread, sends messages, and turns Codex's
 stream of events into short lines for the screen."""
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -14,6 +15,13 @@ from .config import PRICES
 # on_event(agent_name, kind, text). kinds: "text" (streamed answer), "thinking", "tool", "tool_result",
 # "tool_error", "plan" (Codex's checklist), "diff" (the turn's file changes), "notice".
 EventHandler = Callable[[str, str, str], None]
+
+# Why a turn failed (Codex's codexErrorInfo) when trying again later can help: OpenAI was busy or hit an
+# internal error. Others (usage limits, bad requests, policy) won't get better by retrying.
+RETRYABLE_FAILURES = {"serverOverloaded", "internalServerError"}
+RETRY_DELAYS = (5, 15, 45)  # seconds before each automatic retry
+CARRY_ON = ("(The last attempt stopped because OpenAI's servers were busy. Carry on with the task from where "
+            "you stopped; don't redo work that is already done.)")
 
 _PLAN_MARKS = {"completed": "[x]", "inProgress": "[>]", "in_progress": "[>]", "pending": "[ ]"}
 
@@ -73,6 +81,14 @@ class Usage:
         return cls(**{k: data.get(k, 0) for k in ("input", "cached", "output", "reasoning",
                                                   "context_used", "context_window")},
                    by_model=data.get("by_model", {}))
+
+
+def _retryable(error) -> bool:
+    try:
+        from openai_codex.errors import is_retryable_error
+    except ImportError:
+        return False
+    return is_retryable_error(error)
 
 
 def _root(item):
@@ -144,6 +160,10 @@ class CodexAgent:
         self.guard_hits: list[str] = []
         # (turn id, diff) of every turn this agent ran, oldest first: what /undo goes back through.
         self.turns_log: list[tuple] = []
+        self.retries = len(RETRY_DELAYS)    # automatic retries when OpenAI is busy (0 turns them off)
+        self.sleep = time.sleep             # replaced in tests
+        self.last_status = None             # how the last turn ended: completed, failed, interrupted
+        self.last_failure = None            # why it failed (a codexErrorInfo value), or None
 
     # --- thread lifecycle ----------------------------------------------------------------------
 
@@ -270,13 +290,33 @@ class CodexAgent:
         options = self._options(effort)
         if output_schema is not None:
             options["output_schema"] = output_schema
-        self._turn = turn = thread.turn(message, **options)
-        try:
-            return self._consume(turn.stream(), show_text=output_schema is None,
-                                 stream_text=not (self.quiet if quiet is None else quiet),
-                                 turn_id=getattr(turn, "id", None))
-        finally:
-            self._turn = None
+        for attempt in range(self.retries + 1):
+            try:
+                self._turn = turn = thread.turn(message, **options)
+            except Exception as e:  # the turn couldn't even start
+                if attempt < self.retries and _retryable(e):
+                    self._wait(attempt, f"OpenAI is busy ({e})")
+                    continue
+                raise
+            try:
+                answer = self._consume(turn.stream(), show_text=output_schema is None,
+                                       stream_text=not (self.quiet if quiet is None else quiet),
+                                       turn_id=getattr(turn, "id", None))
+            finally:
+                self._turn = None
+            if self.last_status == "failed" and self.last_failure in RETRYABLE_FAILURES and attempt < self.retries:
+                self._wait(attempt, "OpenAI's servers were busy")
+                message = CARRY_ON  # not the same message again: that would repeat work already done
+                options = {k: v for k, v in options.items() if k in ("effort", "output_schema")}
+                continue
+            return answer
+        return answer
+
+    def _wait(self, attempt: int, why: str) -> None:
+        delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+        self._emit("notice", f"{why}; trying again in {delay} s (retry {attempt + 1} of {self.retries}). "
+                             "Ctrl+C stops.")
+        self.sleep(delay)
 
     def run_goal(self, objective: str, token_budget: Optional[int] = None) -> str:
         """Official Codex's /goal: Codex keeps working, over as many turns as it needs, until the goal is
@@ -316,6 +356,7 @@ class CodexAgent:
 
     def _consume(self, stream, show_text: bool, stream_text: bool, turn_id=None) -> str:
         answers, status, error, streamed = [], None, None, False
+        self.last_status = self.last_failure = None
         self.last_diff = ""
         guarded = False
         for event in stream:
@@ -359,7 +400,10 @@ class CodexAgent:
             if self.turns_log and self.turns_log[-1][0] == turn_id:
                 self.turns_log.pop()  # it's out of the conversation, so /undo shouldn't look for it
             return "[Stopped: Codex tried to read or change a secret file.]"
+        self.last_status = status
         if status == "failed":
+            info = getattr(error, "codex_error_info", None)
+            self.last_failure = str(_value(getattr(info, "root", info))) if info is not None else None
             why = getattr(error, "message", None) or str(error or "unknown error")
             self._emit("notice", f"Codex could not finish: {why}")
             return f"[Codex could not finish: {why}]"

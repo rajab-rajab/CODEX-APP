@@ -131,9 +131,52 @@ def approval_for(approval: str, sdk):
 
 
 def _agent(codex, sdk, settings: Settings, **kw) -> CodexAgent:
-    return CodexAgent(codex, approval_mode=approval_for(settings.approval, sdk), config=settings.thread_config(),
-                      thread_cls=getattr(sdk, "Thread", None),
-                      secret_guard=(lambda item: protect.guard_item(item) if settings.secret_guard else None), **kw)
+    agent = CodexAgent(codex, approval_mode=approval_for(settings.approval, sdk), config=settings.thread_config(),
+                       thread_cls=getattr(sdk, "Thread", None),
+                       secret_guard=(lambda item: protect.guard_item(item) if settings.secret_guard else None), **kw)
+    agent.retries = max(0, min(10, settings.retries))
+    return agent
+
+
+WRITER_INSTRUCTIONS = """\
+You write git commit messages and pull request descriptions for the user's project. You only read: never
+change files.
+{rules}
+- Describe what changed and why, from the diff you are given. Don't invent changes that aren't in it.
+- Commit subject: imperative mood ("Add ...", "Fix ..."), at most 60 characters, no full stop.
+- Body: a few short lines or bullets on what changed and why, wrapped at 72 characters. Empty for a
+  trivial change.
+- Plain, specific words; no hype, no emoji."""
+
+COMMIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "subject": {"type": "string", "description": "Imperative, at most 60 characters."},
+        "body": {"type": "string", "description": "What changed and why; may be empty."},
+    },
+    "required": ["subject", "body"],
+    "additionalProperties": False,
+}
+
+
+def make_writer(codex, sdk, workspace_root: Path, settings: Settings, model: str, on_event=None) -> CodexAgent:
+    """A separate read-only Codex thread that writes commit messages and pull request descriptions."""
+    return _agent(codex, sdk, settings, name="writer", model=model, effort="low", sandbox=sdk.Sandbox.read_only,
+                  instructions=WRITER_INSTRUCTIONS.format(rules=_SHARED_RULES), cwd=workspace_root,
+                  on_event=on_event)
+
+
+def write_message(writer: CodexAgent, what: str, text: str) -> tuple[str, str]:
+    """(subject, body) for a commit or pull request, from a diff or a list of commits."""
+    raw = writer.send(f"Write the {what} for these changes, in the JSON form your output schema asks for.\n\n"
+                      f"{text}", output_schema=COMMIT_SCHEMA)
+    try:
+        data = json.loads(raw)
+        subject, body = str(data["subject"]).strip(), str(data.get("body", "")).strip()
+    except (ValueError, KeyError, TypeError):
+        subject, _, body = raw.strip().partition("\n")
+        subject, body = subject.strip(), body.strip()
+    return subject.splitlines()[0][:72] if subject else "Update files", body
 
 
 def make_reviewer(codex, sdk, workspace_root: Path, settings: Settings, model: str, on_event=None) -> CodexAgent:

@@ -78,6 +78,9 @@ class Settings:
     team_size: int = 3             # team mode: how many workers may work at the same time
     structured_verdicts: bool = True  # dual/team: the planner's verdict as structured output, not text
     secret_guard: bool = True      # stop a turn the moment Codex starts to read or change a secret file
+    notify: bool = True            # beep and show a notification when a task took notify_after seconds or more
+    notify_after: int = 30
+    retries: int = 3               # automatic retries when OpenAI is busy (0 turns them off)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -97,6 +100,9 @@ class Settings:
         s.power = _env("CODEX_APP_POWER", s.power)
         s.team_size = _env_int("CODEX_APP_TEAM_SIZE", s.team_size)
         s.secret_guard = _env_bool("CODEX_APP_SECRET_GUARD", s.secret_guard)
+        s.notify = _env_bool("CODEX_APP_NOTIFY", s.notify)
+        s.notify_after = _env_int("CODEX_APP_NOTIFY_AFTER", s.notify_after)
+        s.retries = _env_int("CODEX_APP_RETRIES", s.retries)
         s.check()
         return s
 

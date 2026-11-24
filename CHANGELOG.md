@@ -2,6 +2,21 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+More reliable, and the work goes straight to git.
+
+- **Automatic retries**: a turn that fails because OpenAI is busy or had an internal error is tried
+  again after 5, 15 and 45 seconds, carrying on where it stopped (`CODEX_APP_RETRIES`).
+- **Limit warnings**: with a ChatGPT sign-in, `/status` shows plan limits and their reset times, the app
+  warns once a limit is 80% used, and says when one is hit.
+- **`/commit`**: Codex writes the commit message from the diff; you approve or edit it. Secret files
+  are never committed.
+- **`/pr`**: pushes the work to a branch and opens a pull request with GitHub's `gh`, after asking;
+  commits made on `main` move to a new branch first.
+- **`/save`**: remembers this project's mode, power, profile, permission and models for the next start.
+- **Finish signal**: a beep and a Windows notification when a task took 30 seconds or more.
+
 ## 1.4.0 (2026-11-24)
 
 Safer and more capable: undo, a secret guard, and Codex's tools and skills.
