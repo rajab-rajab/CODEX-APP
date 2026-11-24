@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.8.1 (2026-11-25)
 
 - **Fixed (safety)**: computer use, browsers and account plugins are now off in Codex App by default.
   Codex App shares the Codex engine's settings with the official Codex apps, so plugins they installed
