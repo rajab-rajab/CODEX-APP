@@ -1,0 +1,40 @@
+# When a push to main raises the app's version (codex_app/__init__.py), publish a GitHub Release
+# "vX.Y.Z" with that version's CHANGELOG.md entry as its notes. A version that already has a release is
+# left alone. Run it by hand (Actions -> Run workflow) to publish the current version's release.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: [codex_app/__init__.py]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install packaging
+      - name: Publish the release
+        run: |
+          version=$(python -c "import codex_app; print(codex_app.__version__)")
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version already has a release."; exit 0
+          fi
+          python -c "
+          import sys
+          from codex_app.updater import changelog_section
+          notes = changelog_section(open('CHANGELOG.md', encoding='utf-8').read(), sys.argv[1])
+          open('release-notes.md', 'w', encoding='utf-8').write((notes or 'See CHANGELOG.md.') + '''
+
+          Update an installed copy with: py main.py --update (with the app closed).
+          ''')" "$version"
+          gh release create "v$version" --target "$GITHUB_SHA" --title "Codex App $version" --notes-file release-notes.md

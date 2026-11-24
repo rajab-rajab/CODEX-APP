@@ -242,6 +242,8 @@ def print_versions() -> None:
     print(f"Codex App {__version__}, Codex engine {updater.engine_version() or 'not installed'}")
     app, engine = updater.check_both()  # GitHub and PyPI at the same time
     print(app.message if app else "Could not check GitHub for a new app version.")
+    if app and app.available and app.notes:
+        print("What's new:\n" + "\n".join(f"  - {note}" for note in app.notes))
     print(engine.message if engine else "Could not check PyPI for a new Codex engine.")
 
 

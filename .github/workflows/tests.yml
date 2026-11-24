@@ -39,7 +39,14 @@ jobs:
           git config --global init.defaultBranch main
 
       - name: Tests
+        if: runner.os == 'Windows'
         run: python -m pytest -q
+
+      - name: Tests, with a coverage report (which code no test runs)
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install pytest-cov
+          python -m pytest -q --cov=codex_app --cov=main --cov-report=term-missing:skip-covered
 
       - name: Self-test (offline checks)
         run: python main.py --selftest --offline

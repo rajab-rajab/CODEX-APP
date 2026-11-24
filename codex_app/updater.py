@@ -69,6 +69,39 @@ def local_version(app_dir: Path = APP_DIR) -> str:
         return __version__
 
 
+_SECTION = re.compile(r"^## +(\S+)[^\n]*\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+
+
+def changelog_section(text: str, version: str) -> str:
+    """The CHANGELOG.md text under "## <version> ...", without its heading, or ""."""
+    for found, body in _SECTION.findall(text or ""):
+        if found == version:
+            return body.strip()
+    return ""
+
+
+def changelog_between(text: str, current: str, latest: str) -> list[str]:
+    """The CHANGELOG.md entries of the versions after `current` up to `latest`, newest first, one line each
+    ("1.7.0: --json: one task ..."). Wrapped lines are joined; markdown emphasis is dropped."""
+    from packaging.version import InvalidVersion, Version
+    try:
+        low, high = Version(current), Version(latest)
+    except InvalidVersion:
+        return []
+    notes = []
+    for found, body in _SECTION.findall(text or ""):
+        try:
+            version = Version(found)
+        except InvalidVersion:
+            continue  # "Unreleased" and the like
+        if not low < version <= high:
+            continue
+        for entry in re.split(r"^- ", body, flags=re.MULTILINE)[1:]:
+            line = " ".join(entry.split()).replace("**", "")
+            notes.append(f"{found}: {line}")
+    return notes
+
+
 def check(app_dir: Path = APP_DIR, fetch: bool = True, timeout: int = 30) -> UpdateStatus:
     """Ask GitHub whether a newer version exists. Never changes any file."""
     current = local_version(app_dir)
@@ -87,8 +120,14 @@ def check(app_dir: Path = APP_DIR, fetch: bool = True, timeout: int = 30) -> Upd
                                            + (fetched.stderr.strip().splitlines() or ["unknown error"])[-1], current)
         counts = _git(app_dir, "rev-list", "--left-right", "--count", "HEAD...@{u}", timeout=timeout)
         ahead, behind = (int(n) for n in counts.stdout.split())
-        notes = _git(app_dir, "log", "--format=%s", "-n", "20", "HEAD..@{u}", timeout=timeout).stdout.splitlines()
         latest = _version_in(_git(app_dir, "show", "@{u}:codex_app/__init__.py", timeout=timeout).stdout) or current
+        notes = []
+        if behind:
+            # What's new, from GitHub's CHANGELOG.md; the commit titles if it says nothing about these versions.
+            changelog = _git(app_dir, "show", "@{u}:CHANGELOG.md", timeout=timeout)
+            notes = changelog_between(changelog.stdout, current, latest) if changelog.returncode == 0 else []
+            notes = notes or _git(app_dir, "log", "--format=%s", "-n", "20", "HEAD..@{u}",
+                                  timeout=timeout).stdout.splitlines()
     except FileNotFoundError:
         return UpdateStatus(False, "Git is not installed, so the app can't update itself.", current)
     except subprocess.TimeoutExpired:
@@ -334,6 +373,10 @@ def gather_notice(app_dir: Path, engine: Optional[Callable[[], EngineStatus]] = 
         reached = reached or status.ok
         if status.available:
             lines.append(f"{status.message} Type /update to install it.")
+            for note in status.notes[:3]:  # what's new, from the CHANGELOG
+                lines.append(f"  - {note[:110]}{'...' if len(note) > 110 else ''}")
+            if len(status.notes) > 3:
+                lines.append(f"  ... and {len(status.notes) - 3} more (/version lists them)")
     if engine_status is not None:
         reached = reached or engine_status.ok
         if engine_status.available:

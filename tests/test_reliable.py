@@ -146,16 +146,17 @@ def ident(cwd):
     git(cwd, "config", "user.email", "test@example.com")
 
 
-@pytest.fixture
-def repo(tmp_path):
-    root = tmp_path / "site"
-    root.mkdir()
+def _build_repo(root: Path):
     git(root, "init", "-q", "-b", "main")
     ident(root)
     (root / "a.txt").write_text("a1\n", encoding="utf-8")
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "start")
-    return root
+
+
+@pytest.fixture
+def repo(tmp_path, git_template):
+    return git_template("site", _build_repo, tmp_path)
 
 
 def test_commit_writes_the_message_and_never_commits_secrets(repo, capsys):
@@ -205,21 +206,26 @@ def test_commit_in_a_subfolder_of_a_repository(repo):
 
 # --- /pr ----------------------------------------------------------------------------------------------
 
-@pytest.fixture
-def cloned(tmp_path):
-    """(clone, bare 'GitHub' remote) with main pushed."""
-    remote = tmp_path / "github.git"
-    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
-    clone = tmp_path / "work"
-    git(tmp_path, "clone", "-q", str(remote), str(clone))
+def _build_cloned(base: Path):
+    remote = base / "github.git"
+    git(base, "init", "-q", "--bare", "-b", "main", str(remote))
+    clone = base / "work"
+    git(base, "clone", "-q", str(remote), str(clone))
     ident(clone)
     git(clone, "checkout", "-q", "-b", "main")
     (clone / "a.txt").write_text("a1\n", encoding="utf-8")
     git(clone, "add", "-A")
     git(clone, "commit", "-q", "-m", "start")
+    git(clone, "remote", "set-url", "origin", "../github.git")  # relative, so copies push to their own copy
     git(clone, "push", "-q", "-u", "origin", "main")
     git(clone, "remote", "set-head", "origin", "main")
-    return clone, remote
+
+
+@pytest.fixture
+def cloned(tmp_path, git_template):
+    """(clone, bare 'GitHub' remote) with main pushed."""
+    base = git_template("cloned", _build_cloned, tmp_path)
+    return base / "work", base / "github.git"
 
 
 def test_pr_moves_commits_off_main_pushes_and_opens_it(cloned, monkeypatch, capsys):
