@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.12.0 (2026-11-25)
 
 - **Memory between conversations** (`/memory`), like official Codex's memories. Codex App now keeps short
   notes about each project (how to build and test it, its conventions, your decisions) and your
