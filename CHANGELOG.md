@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.11.0 (2026-11-25)
 
 - **Scheduled tasks** (`/schedule`), like official Codex's automations: `/schedule weekdays 09:00 run the
   tests and fix what fails` runs that task by itself at those times, with this session's mode and
