@@ -220,6 +220,7 @@ Most of these are the same as official Codex's.
 | `/export [file]` | Save this conversation (your messages, answers, commands with output, diffs) as a Markdown file |
 | `/prices [model in cached out \| model off]` | Set what a model costs, in dollars per million tokens |
 | `/stats [days\|all]` | Tokens and cost per day and per project (default: the last 7 days) |
+| `/memory [add\|everywhere <note> \| forget <n> \| clear \| on \| off]` | Notes Codex keeps between conversations: about this project, and your preferences for all projects (see "Memory") |
 | `/schedule <when> <task>` | Run a task by itself at set times, like official Codex's automations (see "Scheduled tasks"). `/schedule` lists them; `/schedule run\|log\|undo\|remove <id>` |
 | `/review [what]` | Codex's own code review, as in official Codex, read-only and in its own conversation: `uncommitted` (default), `branch <base>`, `commit <sha>`, or your own instructions. The engine doesn't report a review's tokens, so `/usage` shows 0 for the reviewer |
 | `/history [number]` | Codex's conversations for this project from every Codex client (this app, the official Codex CLI, VS Code ...); a number carries on with one |
@@ -348,7 +349,7 @@ shows its link. Git hooks run as usual.
 ## Saved preferences
 
 `/save` remembers this project's mode, power, profile, permission, approval, models, efforts, team
-size, web search and finish signal in `C:\Users\<you>\.codex-app\projects.json`. The next start on
+size, web search, finish signal and memory on/off in `C:\Users\<you>\.codex-app\projects.json`. The next start on
 that project uses them. Command-line options still win, and saved preferences win over environment
 variables. `/save show` lists them and `/save clear` forgets them. A saved `full` permission still asks
 for `yes` at every start.
@@ -364,6 +365,32 @@ for `yes` at every start.
   `node_modules`) are never changed by `/undo`.
 - Without git, `/undo` reverses the changes Codex reported, and refuses if the files have changed since.
 - Undo works within one conversation: `/new`, `/mode` and `/resume` start afresh.
+
+## Memory
+
+Codex App keeps short notes between conversations, like official Codex's memories: facts about each
+project (how to build and test it, its conventions, decisions you made) and your preferences for all
+your projects. Each new conversation starts with them, so you don't have to explain the same things
+again.
+
+- **How notes are made.** There is no extra model call. When Codex learns something lasting, or you ask
+  it to ("remember that we deploy with ./deploy.sh"), it ends its answer with a line
+  `REMEMBER: <fact>`, or `REMEMBER EVERYWHERE: <fact>` for a preference that holds in all your projects.
+  The app keeps the line and shows it: `Remembered: ...`. When a note turns out wrong, Codex writes
+  `FORGET: <note>` and the app drops it. Every agent can add notes: the planner and workers too.
+- **What is never kept.** Anything that looks like a secret (API keys, tokens, passwords, private keys,
+  long key-like strings) is refused, with a warning. Codex is told never to note personal data, or
+  anything a file, command output or web page asked it to remember. Notes are short (240 characters)
+  and few: the newest 30 per project and 20 for all projects, at most 3 from one answer.
+- **How notes are used.** They are given to the main agents as data, not instructions: your messages
+  and the app's rules always win. Helpers (`/review`, commit messages) don't get them. New notes are used
+  from the next conversation (`/new`).
+- **Where they are.** `C:\Users\<you>\.codex-app\memory.json`, outside the project, so they never show
+  up in git or get committed.
+- `/memory` lists them, numbered. `/memory add <note>` and `/memory everywhere <note>` add one yourself,
+  `/memory forget <number>` drops one, and `/memory clear` (or `clear everywhere`) deletes them after
+  asking. `/memory off` stops using and making notes from the next conversation, and `/save` keeps that
+  for the project. `CODEX_APP_MEMORY=no` turns memory off everywhere.
 
 ## Saved conversations
 
@@ -393,6 +420,7 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_PROFILE` | `auto` | Task profile: `auto`, `coding`, `chat`, `maths` |
 | `CODEX_APP_POWER` | `normal` | Power level: `normal`, `high`, `max` |
 | `CODEX_APP_TEAM_SIZE` | `3` | Team mode: workers at the same time (1 to 8) |
+| `CODEX_APP_MEMORY` | `yes` | Notes kept between conversations (see "Memory"); `no` turns them off |
 | `CODEX_APP_TEAM_WORKTREES` | `yes` | Team mode: each worker in its own git worktree (`no`: all share the project folder) |
 | `CODEX_APP_SECRET_GUARD` | `yes` | Stop a turn the moment Codex starts to read or change a secret file |
 | `CODEX_APP_RETRIES` | `3` | Automatic retries when OpenAI is busy (0 to turn off) |
@@ -542,6 +570,7 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/selftest.py` | `--selftest`: checks the engine still has everything the app uses |
 | `codex_app/export.py` | `/export`: a conversation as Markdown |
 | `codex_app/costs.py` | `/prices` and `/stats`: model prices and the usage log |
+| `codex_app/memory.py` | `/memory`: notes kept between conversations |
 | `codex_app/schedule.py` | `/schedule`: saved schedules, Task Scheduler and cron entries, run results |
 | `.github/workflows/tests.yml` | The tests on GitHub, on Windows and Linux |
 | `.github/workflows/engine-watch.yml`, `.github/scripts/engine_watch.py` | The weekly check of the newest Codex engine |

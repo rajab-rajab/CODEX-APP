@@ -1,7 +1,7 @@
 """Saved preferences per project (/save), and the signal when a long task finishes.
 
 /save remembers this project's mode, power, profile, permission, approval, models, efforts, team size,
-web search and finish signal in ~/.codex-app/projects.json (set CODEX_APP_HOME to move it). They are used
+web search, finish signal and memory on/off in ~/.codex-app/projects.json (set CODEX_APP_HOME to move it). They are used
 the next time the app starts on that project. Command-line options still win over them, and saved
 preferences win over environment variables."""
 
@@ -16,7 +16,7 @@ from . import config
 
 KEYS = ("mode", "power", "profile", "permission", "approval", "single_model", "single_effort",
         "planner_model", "planner_effort", "worker_model", "worker_effort", "team_size", "web_search", "notify",
-        "browser")
+        "browser", "memory")
 
 
 def _file() -> Path:

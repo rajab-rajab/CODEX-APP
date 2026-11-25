@@ -469,6 +469,8 @@ class CodexAgent:
             answers.append(text)
             if not streamed and text and not repeat:
                 self._emit("text", text)
+            if text.strip():
+                self._emit("answer", text)  # the whole message, for the app (memory notes); not shown again
         elif kind == "exitedReviewMode":  # Codex's own review: the findings
             text = getattr(item, "review", "") or ""
             if text.strip() and text.strip() not in (a.strip() for a in answers):

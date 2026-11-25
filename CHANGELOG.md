@@ -2,6 +2,16 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Memory between conversations** (`/memory`), like official Codex's memories. Codex App now keeps short
+  notes about each project (how to build and test it, its conventions, your decisions) and your
+  preferences for all projects. Each new conversation starts with them. Codex adds a note by ending its
+  answer with `REMEMBER: <fact>` (no extra model call), for example when you say "remember that ...".
+  Every new note is shown, anything that looks like a secret is refused, and notes are given to Codex as
+  data, not instructions. They are kept in `~/.codex-app/memory.json`, outside the project. `/memory`
+  lists, adds, forgets or clears them, and `/memory off` or `CODEX_APP_MEMORY=no` turns memory off.
+
 ## 1.11.0 (2026-11-25)
 
 - **Scheduled tasks** (`/schedule`), like official Codex's automations: `/schedule weekdays 09:00 run the
