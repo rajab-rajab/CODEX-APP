@@ -194,7 +194,8 @@ def test_review_is_shown_once(tmp_path, monkeypatch):
     turn.id = "r"
     monkeypatch.setattr(engine, "start_review", lambda codex, thread_id, target: turn)
     from codex_app.modes import make_reviewer
-    reviewer = make_reviewer(FakeCodex({}), sdk, tmp_path, Settings(), "m", on_event=lambda a, k, t: events.append(t))
+    reviewer = make_reviewer(FakeCodex({}), sdk, tmp_path, Settings(), "m",
+                             on_event=lambda a, k, t: k != "answer" and events.append(t))  # "answer": not shown
     assert reviewer.run_review({"type": "uncommittedChanges"}) == text
     assert events.count(text) == 1
 

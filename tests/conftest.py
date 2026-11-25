@@ -24,6 +24,13 @@ def _ignore_vanished(src, names):
     return [n for n in names if not os.path.exists(os.path.join(src, n))]
 
 
+@pytest.fixture(autouse=True)
+def _memory_in_tmp(tmp_path, monkeypatch):
+    """Memory notes never go to the real ~/.codex-app/memory.json during tests."""
+    from codex_app import memory
+    monkeypatch.setattr(memory, "_file", lambda: tmp_path / "memory-home" / "memory.json")
+
+
 @pytest.fixture(scope="session")
 def git_template(tmp_path_factory):
     """git_template(name, build) -> a fresh copy of the folder `build(folder)` made, built once per run."""

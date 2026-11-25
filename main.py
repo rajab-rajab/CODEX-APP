@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from codex_app import __version__, approvals, browser, costs, engine, export, gitflow, outside, prefs, profiles, \
-    protect, schedule, sessions, undo, updater
+    memory, protect, schedule, sessions, undo, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
 from codex_app.modes import INIT_TASK, MODES, make_reviewer, make_writer, project_instructions, review_task, \
@@ -61,6 +61,9 @@ HELP = """Commands (most are the same as official Codex's):
   /schedule <when> <task> run a task by itself at set times (daily 09:00, weekdays 18:00,
                           mon,thu 08:30, every 3 hours), with this mode and settings;
                           /schedule lists them, also: run|log|undo|remove <id>
+  /memory [add|everywhere <note> | forget <n> | clear | on | off]
+                          notes Codex keeps between conversations: about this project, and
+                          your preferences for all projects
   /review [what]          a read-only code review: uncommitted (default), branch <base>,
                           commit <sha>, or your own instructions
   /mention <file>         attach a file to your next message (or write @path in a message)
@@ -126,6 +129,8 @@ class Screen:
             self._event(agent, kind, text)
 
     def _event(self, agent: str, kind: str, text: str) -> None:
+        if kind == "answer":
+            return  # a whole message, already shown as it was written
         if kind == "text":
             if self.streaming_from != agent:
                 self.finish()
@@ -350,7 +355,9 @@ class App:
         self.settings = settings
         self.screen = screen or Screen()
         self.approver = approver
-        self.mode = MODES[mode_name](codex, sdk, self.root, settings, on_event=self.screen.event)
+        self._heard = []     # the agents' whole answers during a task: their REMEMBER lines become notes
+        self.refresh_memory()
+        self.mode = MODES[mode_name](codex, sdk, self.root, settings, on_event=self.on_event)
         self.session_path = sessions.new_session_path(mode_name)
         self.title = ""
         self.pending = []    # files and images attached with /mention and /image, sent with the next message
@@ -412,9 +419,85 @@ class App:
                   else f"{YELLOW}Nothing to steer right now; send it again when Codex has finished.{RESET}")
         return True
 
+    # --- memory between conversations (see codex_app/memory.py) ------------------------------------
+
+    def on_event(self, agent: str, kind: str, text: str) -> None:
+        """What the agents report: shown on screen; whole answers are kept for memory notes."""
+        if kind == "answer":
+            self._heard.append(text)
+            return
+        self.screen.event(agent, kind, text)
+
+    def refresh_memory(self) -> None:
+        self.settings.memory_notes = memory.instructions(self.root) if self.settings.memory else ""
+
+    def remember(self) -> None:
+        """After a task: keep the notes the agents' answers asked for, and say what was kept."""
+        heard, self._heard = self._heard, []
+        if not self.settings.memory or not heard:
+            return
+        try:
+            kept, forgotten, refused = memory.learn(self.root, heard)
+        except OSError as e:
+            print(f"{YELLOW}Couldn't save memory notes: {e}{RESET}")
+            return
+        for note in kept:
+            print(f"{GREY}  Remembered: {note}  (/memory lists notes){RESET}")
+        for note in forgotten:
+            print(f"{GREY}  Forgot: {note}{RESET}")
+        for note in refused:
+            print(f"{YELLOW}  Not remembered (it looks like a secret): {note}{RESET}")
+
+    def memory_command(self, arg: str) -> None:
+        """/memory [add <note> | everywhere <note> | forget <number> | clear [everywhere] | on | off]"""
+        sub, _, rest = arg.partition(" ")
+        sub, rest = sub.lower(), rest.strip()
+        if sub in ("", "list", "show"):
+            project, everywhere = memory.notes(self.root)
+            state = "on" if self.settings.memory else f"{YELLOW}off{RESET} (/memory on turns it on)"
+            print(f"Memory is {state}. Notes are kept in {memory._file()}, outside the project.")
+            if not project and not everywhere:
+                print("No notes yet. Codex adds them as it learns about the project, or when you ask it to "
+                      "remember something; /memory add <note> adds one yourself.")
+            number = 0
+            for title, items in (("About this project", project), ("For all your projects", everywhere)):
+                if items:
+                    print(f"{CYAN}{title}:{RESET}")
+                for note in items:
+                    number += 1
+                    print(f"  {number:>2}. {note['text']}  {GREY}({note.get('added', '?')}){RESET}")
+            if number:
+                print(f"{GREY}/memory forget <number> drops one. New notes are used from the next conversation (/new)."
+                      f"{RESET}")
+        elif sub in ("add", "everywhere") and rest:
+            note = memory.add(self.root, rest, everywhere=sub == "everywhere")
+            if note:
+                print(f"Noted{' for all your projects' if sub == 'everywhere' else ''}: {note}  "
+                      f"{GREY}(used from the next conversation){RESET}")
+            else:
+                print(f"{YELLOW}Not kept: it is already noted, or looks like a secret.{RESET}")
+        elif sub in ("forget", "remove", "delete") and rest.isdigit():
+            dropped = memory.forget_number(self.root, int(rest))
+            print(f"Forgot: {dropped}" if dropped else f"No note {rest}; /memory lists them.")
+        elif sub == "clear":
+            everywhere = rest.lower() in ("everywhere", "all")
+            what = "notes for all your projects" if everywhere else "this project's notes"
+            if self.ask(f"Delete {what}? (y/n) ").strip().lower() not in ("y", "yes"):
+                print("Nothing deleted.")
+                return
+            print(f"Deleted {memory.clear(self.root, everywhere=everywhere)} note(s).")
+        elif sub in ("on", "off"):
+            self.settings.memory = sub == "on"
+            print(f"Memory is {sub} from the next conversation (/new); /save keeps it for this project."
+                  if sub == "on" else "Memory is off from the next conversation (/new): notes aren't used or "
+                  "made. The notes stay; /memory clear deletes them. /save keeps this for the project.")
+        else:
+            print("/memory [add <note> | everywhere <note> | forget <number> | clear [everywhere] | on | off]")
+
     def new_conversation(self, mode_name: str) -> None:
         self.undo_points = []  # /undo works within one conversation
-        self.mode = MODES[mode_name](self.codex, self.sdk, self.root, self.settings, on_event=self.screen.event)
+        self.refresh_memory()  # a new conversation starts with the notes kept so far
+        self.mode = MODES[mode_name](self.codex, self.sdk, self.root, self.settings, on_event=self.on_event)
         self.session_path = sessions.new_session_path(mode_name)
         self.title = ""
 
@@ -481,6 +564,7 @@ class App:
         if self.pump is not None and self._steer_hint:
             print(f"{GREY}  (type to steer Codex while it works, /stop to stop it){RESET}")
             self._steer_hint = False
+        self._heard = []  # this task's answers, for memory notes
         point = {"mode": self.mode, "title": self._last_message, "tree": undo.snapshot(self.root),
                  "marks": {a.name: len(a.turns_log) for a in self.mode.agents()}}
         started = time.monotonic()
@@ -502,6 +586,9 @@ class App:
             if any(len(a.turns_log) > point["marks"].get(a.name, 0) for a in self.mode.agents()):
                 self.undo_points.append(point)
             self.save()
+            if error != "stopped":
+                self.remember()
+            self._heard = []
             used = costs.record(used_before, self.mode.agents(), self.root, self.mode.name)
             self.last_run = {"answer": answer, "error": error, "point": point, "used": used,
                              "seconds": round(time.monotonic() - started, 1)}
@@ -924,7 +1011,7 @@ class App:
         s, start = self.settings, self.start_settings
         values = {"mode": self.mode.name, "power": s.power, "profile": s.profile, "permission": s.permission,
                   "approval": s.approval, "team_size": s.team_size, "web_search": s.web_search, "notify": s.notify,
-                  "browser": s.browser,
+                  "browser": s.browser, "memory": s.memory,
                   # the models without the power preset on top, so loading applies the power level again
                   **{k: getattr(start if s.power != "normal" else s, k) for k in
                      ("single_model", "single_effort", "planner_model", "planner_effort", "worker_model",
@@ -1413,6 +1500,8 @@ class App:
             self.export(arg)
         elif name == "/prices":
             self.prices(arg)
+        elif name in ("/memory", "/memories"):
+            self.memory_command(arg)
         elif name in ("/schedule", "/schedules"):
             self.schedule(arg)
         elif name == "/stats":
