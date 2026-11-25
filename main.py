@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from codex_app import __version__, approvals, browser, costs, engine, export, gitflow, outside, prefs, profiles, \
-    protect, sessions, undo, updater
+    protect, schedule, sessions, undo, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
 from codex_app.modes import INIT_TASK, MODES, make_reviewer, make_writer, project_instructions, review_task, \
@@ -58,6 +58,9 @@ HELP = """Commands (most are the same as official Codex's):
   /export [file]          save this conversation (messages, commands, diffs) as a Markdown file
   /prices [model in cached out | model off]  set what a model costs ($ per million tokens)
   /stats [days|all]       tokens and cost per day and per project (default: the last 7 days)
+  /schedule <when> <task> run a task by itself at set times (daily 09:00, weekdays 18:00,
+                          mon,thu 08:30, every 3 hours), with this mode and settings;
+                          /schedule lists them, also: run|log|undo|remove <id>
   /review [what]          a read-only code review: uncommitted (default), branch <base>,
                           commit <sha>, or your own instructions
   /mention <file>         attach a file to your next message (or write @path in a message)
@@ -1038,7 +1041,8 @@ class App:
         return {"ok": ok, "answer": answer, "error": run.get("error") or (next(iter(failures.values())) if failures else None),
                 "mode": self.mode.name, "project": str(self.root), "files_changed": files, "tokens": tokens,
                 "cost_usd": None if not cost or None in cost else round(sum(cost), 6),
-                "seconds": run.get("seconds"), "app_version": __version__}
+                "seconds": run.get("seconds"), "app_version": __version__,
+                "before_tree": point.get("tree")}
 
     def export(self, arg: str = "") -> None:
         """/export [file]: this conversation as a Markdown file."""
@@ -1107,6 +1111,128 @@ class App:
         if data["unpriced"]:
             print(f"{YELLOW}No price for {', '.join(sorted(data['unpriced']))}, so their cost isn't counted. "
                   f"Add one with /prices.{RESET}")
+
+    # --- /schedule: tasks that run by themselves at set times (see codex_app/schedule.py) --------------
+
+    def schedule(self, arg: str) -> None:
+        words = arg.split()
+        sub = words[0].lower() if words else "list"
+        target = words[1] if len(words) > 1 else ""
+        try:
+            if sub == "list":
+                self.schedule_list()
+            elif sub in ("remove", "delete") and target:
+                print(f"Removed schedule {target}." if schedule.remove(target) else f"No schedule {target}.")
+            elif sub == "run" and target:
+                self.schedule_run_now(target)
+            elif sub == "log":
+                self.schedule_log(target)
+            elif sub == "undo" and target:
+                self.schedule_undo(target)
+            else:
+                self.schedule_add(words)
+        except (RuntimeError, OSError) as e:
+            print(f"{RED}The computer's scheduler refused: {e}{RESET}")
+
+    def schedule_add(self, words: list) -> None:
+        try:
+            when, rest = schedule.parse_when(words)
+            kept = schedule.settings_for(self.settings)
+        except ValueError as e:
+            print(f"{YELLOW}{e}{RESET}")
+            return
+        task = " ".join(rest).strip()
+        if not task:
+            print(f"{YELLOW}What should it do? {schedule.USAGE}{RESET}")
+            return
+        s = schedule.Schedule(id=schedule.new_id(), task=task, project=str(self.root), when=vars(when),
+                              mode=self.mode.name, settings=kept, created=time.strftime("%Y-%m-%d %H:%M"))
+        print(f"Schedule {s.id}: {when.describe()}, in {self.root}\n  task: {task}\n"
+              f"  {self.mode.name} mode, permission {kept['permission']}, approval {kept['approval']}, "
+              f"power {kept['power']}")
+        print(f"{GREY}It runs by itself while you are signed in to this computer, changes files in the project "
+              f"like any task, and costs tokens each time. /schedule undo {s.id} puts the files back after a run."
+              f"{RESET}")
+        if self.ask("Create it? (y/n) ").strip().lower() not in ("y", "yes"):
+            print("Not created.")
+            return
+        schedule.add(s)
+        print(f"{GREEN}Created schedule {s.id}.{RESET} /schedule lists schedules, /schedule run {s.id} runs it now.")
+
+    def schedule_list(self) -> None:
+        items = schedule.load_all()
+        if not items:
+            print("No schedules yet. " + schedule.USAGE)
+            return
+        for s in items:
+            last = schedule.runs(s.id)[:1]
+            status = "never run"
+            if last:
+                report = last[0][1]
+                result = report.get("result") or {}
+                status = f"last run {report.get('started', '?')}: " + (
+                    "skipped (still running)" if report.get("skipped") else "ok" if result.get("ok") else "FAILED")
+            registered = schedule.SCHEDULER.exists(s.id)
+            missing = f" {RED}(missing from the computer's scheduler){RESET}" if registered is False else ""
+            where = "" if Path(s.project) == self.root else f"\n      in {s.project}"
+            print(f"  {CYAN}{s.id}{RESET}  {s.timing.describe()}, {s.mode} mode: {s.task[:70]}{missing}{where}\n"
+                  f"      {GREY}{status}{RESET}")
+
+    def schedule_run_now(self, schedule_id: str) -> None:
+        if schedule.get(schedule_id) is None:
+            print(f"No schedule {schedule_id}.")
+            return
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+        subprocess.Popen(schedule.command(schedule_id), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=flags, start_new_session=os.name != "nt")
+        print(f"Started schedule {schedule_id} in the background. /schedule log {schedule_id} shows the result.")
+
+    def schedule_log(self, schedule_id: str = "") -> None:
+        items = [s for s in schedule.load_all() if not schedule_id or s.id == schedule_id]
+        if schedule_id and not items:
+            print(f"No schedule {schedule_id}.")
+            return
+        shown = 0
+        for s in items:
+            for path, report in schedule.runs(s.id)[:1 if not schedule_id else 10]:
+                result = report.get("result") or {}
+                files = ", ".join(f["path"] for f in result.get("files_changed") or []) or "no files changed"
+                cost = result.get("cost_usd")
+                state = ("skipped: the last run was still going" if report.get("skipped") else
+                         f"{GREEN}ok{RESET}" if result.get("ok") else
+                         f"{RED}failed{RESET}: {result.get('error') or report.get('error') or 'see the log'}")
+                print(f"  {CYAN}{s.id}{RESET} {report.get('started', '?')}  {state}  ({files}"
+                      f"{f', ${cost:.4f}' if cost is not None else ''})")
+                shown += 1
+            if schedule_id and shown:
+                answer = (schedule.runs(s.id)[0][1].get("result") or {}).get("answer", "")
+                if answer:
+                    print(f"\nLast answer:\n{answer[:3000]}")
+                print(f"{GREY}Full results and logs: {schedule.runs_dir(s.id)}{RESET}")
+        if not shown:
+            print("No runs yet.")
+
+    def schedule_undo(self, schedule_id: str) -> None:
+        s = schedule.get(schedule_id)
+        last = schedule.runs(schedule_id)[:1] if s else []
+        tree = ((last[0][1].get("result") or {}).get("before_tree") if last else None)
+        if not tree:
+            print(f"No run of schedule {schedule_id} to undo (or its project isn't a git project).")
+            return
+        project = Path(s.project)
+        todo = undo.changes(project, tree)
+        if not todo:
+            print("The files are already as they were before that run.")
+            return
+        print(f"Putting {project} back as it was before the run of {last[0][1].get('started', '?')}:")
+        for what, path in todo:
+            print(f"  {what}: {path}")
+        print(f"{YELLOW}This also undoes any changes made to these files after that run.{RESET}")
+        if self.ask("Go ahead? (y/n) ").strip().lower() not in ("y", "yes"):
+            print("Nothing changed.")
+            return
+        undo.restore(project, tree)
+        print(f"{GREEN}Done.{RESET}")
 
     def queue(self, arg: str) -> None:
         """/queue <task>: do it after the current task (or now, if nothing runs). /queue lists, /queue clear empties."""
@@ -1287,6 +1413,8 @@ class App:
             self.export(arg)
         elif name == "/prices":
             self.prices(arg)
+        elif name in ("/schedule", "/schedules"):
+            self.schedule(arg)
         elif name == "/stats":
             self.stats(arg)
         elif name == "/commit":
@@ -1422,14 +1550,64 @@ def _value_root(x):
     return getattr(x, "root", x)
 
 
+def run_scheduled(schedule_id: str, run_main=None) -> int:
+    """`--run-schedule <id>`: what the computer's scheduler starts. Runs the schedule's task as a --json run,
+    with nothing on screen (there may be no window: pythonw), and keeps the result and the log in
+    ~/.codex-app/schedules/runs/<id>/."""
+    import io
+    import traceback
+    s = schedule.get(schedule_id)
+    if s is None:
+        return 2  # removed in the app, but still in the computer's scheduler: nothing to run
+    started = time.strftime("%Y-%m-%d %H:%M:%S")
+    with schedule.Lock(schedule_id) as lock:
+        if not lock.held:
+            schedule.save_run(schedule_id, {"schedule": schedule_id, "started": started, "skipped": True}, "")
+            return 0
+        out, log = io.StringIO(), io.StringIO()
+        saved_streams, saved_env = (sys.stdout, sys.stderr, sys.stdin), dict(os.environ)
+        sys.stdout, sys.stderr, sys.stdin = out, log, io.StringIO()
+        os.environ.update(schedule.env_for(s))
+        code, error = 1, None
+        try:
+            with schedule.HiddenWindows():
+                code = (run_main or main)(schedule.argv_for(s))
+        except SystemExit as e:  # argparse refused the saved settings
+            code, error = (e.code if isinstance(e.code, int) else 2), "the saved settings were refused"
+        except BaseException as e:  # kept in the log, never lost
+            error = f"{type(e).__name__}: {e}"
+            traceback.print_exc(file=log)
+        finally:
+            sys.stdout, sys.stderr, sys.stdin = saved_streams
+            os.environ.clear()
+            os.environ.update(saved_env)
+        try:
+            result = json.loads(out.getvalue().strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            result = None
+        report = {"schedule": schedule_id, "task": s.task, "project": s.project, "started": started,
+                  "finished": time.strftime("%Y-%m-%d %H:%M:%S"), "exit_code": code, "result": result,
+                  "error": error or (None if result else "no result (see the log)")}
+        log_text = re.sub(r"\x1b\[[0-9;]*m", "", log.getvalue())  # no colour codes in the saved log
+        schedule.save_run(schedule_id, report, log_text)
+    ok = bool(result and result.get("ok"))
+    try:
+        prefs.signal_done(f"Codex App schedule {schedule_id} {'finished' if ok else 'FAILED'}: {s.task[:80]}")
+    except Exception:
+        pass  # no console (pythonw) or no notifications: the run's result is saved either way
+    return 0 if ok else 1
+
+
 def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8")
         except (AttributeError, ValueError):
             pass
-    if os.name == "nt":
-        os.system("")  # turns on colour codes in older Windows consoles
+    scheduled = "--run-schedule" in (sys.argv[1:] if argv is None else argv) or os.environ.get("CODEX_APP_SCHEDULED")
+    if os.name == "nt" and not scheduled:
+        os.system("")  # turns on colour codes in older Windows consoles (a scheduled run has no console:
+        # this would open a terminal window)
 
     permission_choices = [*PERMISSIONS, *PERMISSION_ALIASES]
     parser = argparse.ArgumentParser(description="OpenAI Codex with single, dual (planner + worker) and team modes.")
@@ -1478,7 +1656,11 @@ def main(argv=None) -> int:
                              "everything else goes to stderr")
     parser.add_argument("--offline", action="store_true",
                         help="with --selftest: only the checks that don't start the engine")
+    parser.add_argument("--run-schedule", metavar="ID",
+                        help="run a saved schedule's task now (what the computer's scheduler starts; see /schedule)")
     args = parser.parse_args(argv)
+    if args.run_schedule:
+        return run_scheduled(args.run_schedule)
 
     real_stdout = sys.stdout
     if args.json:

@@ -16,6 +16,8 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    env:
+      CODEX_APP_TEST_REAL_SCHEDULER: "yes"  # the runner is throwaway: add and remove one real scheduled task
     strategy:
       fail-fast: false
       matrix:

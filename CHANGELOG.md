@@ -2,6 +2,17 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Scheduled tasks** (`/schedule`), like official Codex's automations: `/schedule weekdays 09:00 run the
+  tests and fix what fails` runs that task by itself at those times, with this session's mode and
+  settings. It uses Windows Task Scheduler (only while you are signed in, no window, never twice at
+  once) or cron on Linux and macOS. Runs never ask anything, so they never use `full` permission or the
+  `ask` approval mode. Each run's result and log are kept. `/schedule log <id>` shows them,
+  `/schedule undo <id>` puts the files back as they were before the last run, and
+  `/schedule run|remove <id>` runs one now or deletes it.
+- `--json` results now include `before_tree`: the git snapshot of the project's files before the task.
+
 ## 1.10.0 (2026-11-25)
 
 - **Team mode: each worker in its own git worktree**, the way official Codex keeps parallel work apart.
