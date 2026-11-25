@@ -2,6 +2,15 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Benchmark** (`py bench/run.py`): it measures how often single, dual and team mode get fixed tasks right,
+  and what that costs. Six tasks each start as a fresh project that Codex App works on as usual. Only
+  then are the task's hidden tests added, and a run passes only if they all pass. The report gives each
+  mode's pass rate, median time, median tokens and cost. `--check` makes sure every task is fair, with no
+  model (the normal tests run it), and the `benchmark` GitHub workflow runs it by hand with an
+  `OPENAI_API_KEY` secret.
+
 ## 1.14.0 (2026-11-25)
 
 - **Browser check** in dual and team mode, like the official Codex app's in-app browser verification. When

@@ -633,6 +633,8 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/sessions.py` | Saving and resuming conversations |
 | `codex_app/updater.py` | Updating Codex App from GitHub and the Codex engine from PyPI |
 | `tests/` | Tests with a fake Codex (no key, nothing billed) |
+| `bench/run.py`, `bench/tasks/` | The benchmark: fixed tasks with hidden tests, run in each mode |
+| `.github/workflows/bench.yml` | The benchmark on GitHub, started by hand |
 
 ## Tests
 
@@ -643,12 +645,13 @@ py -m pytest -q
 The tests use a fake Codex: no key is needed and nothing is billed. Repositories the tests need are
 built once per run and copied for each test, so the suite takes about 2 minutes on Windows instead of 3.
 
-Three GitHub workflows keep the app safe:
+Four GitHub workflows keep the app safe:
 
 | Workflow | When | What it does |
 |---|---|---|
 | `tests.yml` | Every pull request and push to `main` | All tests on Windows and Linux, the offline part of `--selftest`, and a coverage report (which code no test runs) on Linux |
 | `engine-watch.yml` | Every Monday, or by hand | Installs the newest Codex engine, even one the app doesn't accept yet, and runs all tests and the offline self-test with it on Windows and Linux. If they pass and the engine is outside the accepted range, it opens a pull request that widens the range up to the next minor version. If they fail, it opens an issue |
+| `bench.yml` | Only when you start it (Actions > benchmark > Run workflow) | The benchmark (see "Benchmark") with real model runs, so it is billed; it needs an `OPENAI_API_KEY` repository secret. The results are in the run's summary and kept as an artifact |
 | `release.yml` | A push to `main` that raises the version | Publishes a GitHub Release `vX.Y.Z` with that version's CHANGELOG entry as its notes |
 
 `main` is protected on GitHub: a pull request can only be merged once both test jobs (`windows-latest`
@@ -658,6 +661,40 @@ A pull request opened by `engine-watch.yml` doesn't run `tests.yml` itself (GitH
 from its own token); the engine-watch run it links to has already run them with the new engine. Before
 merging it, run `py main.py --selftest` on a PC with that engine: the live checks need a signed-in Codex,
 so they can't run on GitHub.
+
+## Benchmark
+
+`bench/run.py` measures how often each mode gets fixed tasks right, and what that costs, so the modes can
+be compared in numbers rather than claims:
+
+```bash
+py bench/run.py
+```
+
+```bash
+py bench/run.py --modes single,dual --repeat 3 --tasks median-bug,two-fixes
+```
+
+- **Six tasks** in `bench/tasks/`: fix a bug, add a function from a spec, rename across files, make
+  failing tests pass without changing them, write a parser with error handling, and two independent
+  fixes in two files (which suits team mode).
+- **How a run is judged.** Each task starts as a fresh git project. Codex App works on it exactly as you
+  would use it (`--json`, permission `workspace`, approval `deny_all`). Only then are the task's hidden
+  tests copied in, so Codex never sees them, and a run passes only if all of them pass.
+- **What is recorded.** For each mode: runs passed, pass rate, median time, median tokens and total cost.
+  Costs need prices for the models (`/prices`). The results go to `bench/results/<date-time>.md` and
+  `.json`, which git ignores.
+- **Costs.** Runs are billed like any task: 18 runs for all six tasks in all three modes. Memory, the
+  browser check, the update check and the finish signal are off, and app data goes to a temporary folder,
+  so your notes and `/stats` stay as they were. `--power high` runs every mode at a higher power level, and
+  `--keep` keeps the projects and the app's log of each run.
+- **Fair tasks.** `py bench/run.py --check` (no model, nothing billed) makes sure every task is fair: its
+  starting project fails the hidden tests, and its reference solution passes them. The normal tests run
+  this, so a broken task can't get in.
+- **On GitHub.** The `benchmark` workflow runs it by hand, with an `OPENAI_API_KEY` secret.
+
+A new task is a folder with `task.json` (`title`, `kind`, `prompt`), `start/`, `hidden/` (pytest tests)
+and `solution/`.
 
 ## License
 

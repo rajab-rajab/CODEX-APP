@@ -1,0 +1,58 @@
+# The benchmark (bench/run.py): single, dual and team mode on fixed tasks, with real model runs.
+# It is billed, so it only runs when you start it (Actions > benchmark > Run workflow), and it needs an
+# OPENAI_API_KEY repository secret (Settings > Secrets and variables > Actions). The results are kept as
+# an artifact of the run and shown in its summary.
+name: benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      modes:
+        description: "Modes, comma-separated"
+        default: "single,dual,team"
+      tasks:
+        description: "Tasks, comma-separated (empty: all)"
+        default: ""
+      repeat:
+        description: "Runs per task and mode"
+        default: "1"
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install
+        run: python -m pip install -r requirements.txt
+
+      - name: Check the tasks (no model)
+        run: python bench/run.py --check
+
+      - name: Run the benchmark
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MODES: ${{ inputs.modes }}
+          TASKS: ${{ inputs.tasks }}
+          REPEAT: ${{ inputs.repeat }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::Add an OPENAI_API_KEY repository secret to run the benchmark."
+            exit 1
+          fi
+          python bench/run.py --modes "$MODES" --repeat "$REPEAT" ${TASKS:+--tasks "$TASKS"}
+          cat bench/results/*.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: bench/results/
+          if-no-files-found: ignore
