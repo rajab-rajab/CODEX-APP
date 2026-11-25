@@ -94,6 +94,8 @@ class Settings:
     browser_server: object = None    # set by the app when the browser is ready (not a setting to save)
     browser_sites: str = ""          # comma-separated allowlist: only these sites open (for shared installs)
     browser_private: bool = False    # allow private network addresses (routers, intranets): off
+    browser_check: bool = True       # dual/team: web changes are looked at in the browser before the verdict
+    check_url: str = ""              # ... at this address (a dev server you run); else the app serves the folder
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -126,6 +128,8 @@ class Settings:
         s.browser_headless = _env_bool("CODEX_APP_BROWSER_HEADLESS", s.browser_headless)
         s.browser_sites = _env("CODEX_APP_BROWSER_SITES", s.browser_sites)
         s.browser_private = _env_bool("CODEX_APP_BROWSER_PRIVATE", s.browser_private)
+        s.browser_check = _env_bool("CODEX_APP_BROWSER_CHECK", s.browser_check)
+        s.check_url = _env("CODEX_APP_CHECK_URL", s.check_url)
         s.check()
         return s
 

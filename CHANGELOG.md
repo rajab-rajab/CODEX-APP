@@ -2,6 +2,16 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Browser check** in dual and team mode, like the official Codex app's in-app browser verification. When
+  the worker changes web files, a separate read-only checker opens the changed pages in a headless
+  browser before the planner's verdict. It runs only on this computer, with no clicks that need a yes,
+  and reports whether they load and show the change. The planner weighs that like a test result. The app
+  serves the project folder on 127.0.0.1 for the check, never secret files or `.git`, or uses your dev
+  server's address (`/browser check http://localhost:3000`). `/browser check off` or
+  `CODEX_APP_BROWSER_CHECK=no` turns it off. It needs Playwright.
+
 ## 1.13.0 (2026-11-25)
 
 - **`/pr fix`**: Codex fixes a pull request's failing checks and open review comments, like the official

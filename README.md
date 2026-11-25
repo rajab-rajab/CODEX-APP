@@ -58,6 +58,29 @@ conversation starts); `/save` remembers it for the project.
 It needs Playwright, which drives the browser: `py -m pip install playwright`. It uses the Edge or Chrome
 already on your PC; if neither is there, `py -m playwright install chromium` downloads one.
 
+### Browser check: web changes looked at before the verdict
+
+In dual and team mode, when the worker changes web files, the changed pages are opened in a real browser
+before the planner gives its verdict, like the official Codex app's in-app browser verification. That
+covers HTML, CSS, JSX/TSX, Vue and Svelte, and also JavaScript or TypeScript in a project with HTML pages.
+
+- A separate, read-only checker opens the pages in this browser. It runs headless (no window), only on
+  this computer (localhost), and with no clicks that would need a yes: there is no one to ask, so the
+  browser refuses them.
+- The checker reports whether each page loads, whether the change shows up and works, and what is broken.
+  The planner gets that as a `BROWSER CHECK` next to the diff and weighs it like a test result. A page that
+  doesn't show the change is a reason to send the work back.
+- The pages come from a small web server the app runs for the check: the project folder on `127.0.0.1`
+  with a random port, read-only, never secret files, `.git` or other hidden folders, and no folder
+  listings. It stops when the check ends.
+- For an app that needs its own dev server (React, Vue, Next ...), start it yourself and run
+  `/browser check http://localhost:3000` (or set `CODEX_APP_CHECK_URL`). `/browser check folder` goes
+  back to serving the folder.
+- It doesn't need `/browser on`, but it does need Playwright, as above. Without Playwright the review goes
+  ahead without it, and the app says so once. Each check is an extra, short model turn, so
+  `/browser check off` (or `CODEX_APP_BROWSER_CHECK=no`) turns it off. `/save` keeps the choice for the
+  project.
+
 ### Misuse protection: no hacking with the browser
 
 The browser must not become a tool for attacking websites. The people misusing a tool are its own users,
@@ -231,6 +254,7 @@ Most of these are the same as official Codex's.
 | `/mcp` | List the MCP servers (external tools such as GitHub or databases) Codex is set up with, their status and tools |
 | `/secrets [on\|off]` | List secret files in the project; turn the secret guard on or off |
 | `/browser [on\|off]` | Codex App's private browser for the next conversation (see "Built-in browser") |
+| `/browser check [on\|off\|<url>]` | Dual and team mode: changed web pages are opened in a headless browser before the planner's verdict (the project folder, or your dev server's address) |
 | `/compact` | Summarise the conversation so far, to free up context |
 | `/init` | Writes an `AGENTS.md` describing your project. Codex reads it automatically |
 | `/models` | Lists the models Codex can use |
@@ -441,6 +465,8 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_BROWSER_HEADLESS` | `no` | Run it without a window |
 | `CODEX_APP_BROWSER_SITES` | (any) | Only these sites (comma-separated, subdomains included) may open in the browser |
 | `CODEX_APP_BROWSER_PRIVATE` | `no` | Allow private network addresses (routers, intranets) in the browser |
+| `CODEX_APP_BROWSER_CHECK` | `yes` | Dual and team mode: look at changed web pages in the browser before the verdict (see "Browser check") |
+| `CODEX_APP_CHECK_URL` | | Where the browser check opens the pages, for a dev server you run (for example `http://localhost:3000`); empty: the app serves the project folder |
 | `CODEX_APP_PROFILE` | `auto` | Task profile: `auto`, `coding`, `chat`, `maths` |
 | `CODEX_APP_POWER` | `normal` | Power level: `normal`, `high`, `max` |
 | `CODEX_APP_TEAM_SIZE` | `3` | Team mode: workers at the same time (1 to 8) |
@@ -584,6 +610,7 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/outside.py` | Switching off computer use, browsers and account plugins for Codex App |
 | `codex_app/browser_mcp.py` | The built-in browser: an MCP server with its safety rules |
 | `codex_app/browser.py` | The app's side of the browser: starting it and asking you before risky actions |
+| `codex_app/webcheck.py` | The browser check: which changes are web changes, the page server, the checker's report |
 | `codex_app/browser_guard.py` | The browser's misuse protection: attack input, networks, rate limits, CAPTCHAs, log |
 | `codex_app/profiles.py` | Task profiles (coding, chat, maths) and power presets |
 | `codex_app/goals.py` | Goal mode: Codex working on its own until a goal is done |

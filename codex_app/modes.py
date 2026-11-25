@@ -17,7 +17,10 @@ import sys
 import threading
 from pathlib import Path
 
-from . import approvals, browser as browser_tool, profiles, protect, worktrees
+import copy
+from contextlib import nullcontext
+
+from . import approvals, browser as browser_tool, profiles, protect, webcheck, worktrees
 from .agent import CodexAgent, Usage
 from .config import Settings
 
@@ -71,6 +74,9 @@ When you get the WORKER'S REPORT:
 - It comes with THE WORKER'S CHANGES: the exact diff Codex recorded. Review that diff rather than
   re-reading whole files; open a file only where you need more context, or when the diff was cut short.
 - Run the tests if the project has them.
+- A BROWSER CHECK, when there is one, is what a separate checker saw when it opened the changed pages in a
+  real browser. Weigh it like a test result: a page that doesn't load or doesn't show the change is a
+  reason to ask for fixes.
 - End with exactly one of these lines:
   VERDICT: APPROVED
   VERDICT: CHANGES_NEEDED
@@ -191,6 +197,18 @@ def make_reviewer(codex, sdk, workspace_root: Path, settings: Settings, model: s
     return _agent(codex, sdk, settings, name="reviewer", model=model, effort="high", sandbox=sdk.Sandbox.read_only,
                   instructions=REVIEW_INSTRUCTIONS.format(rules=_SHARED_RULES), cwd=workspace_root,
                   on_event=on_event, ephemeral=True, browser=False, notes=False)
+
+
+def make_checker(codex, sdk, workspace_root: Path, settings: Settings, model: str, on_event=None) -> CodexAgent:
+    """A separate read-only Codex thread with its own headless browser for the browser check (webcheck.py):
+    only this computer, and no clicks that would need a yes, because there is no one to ask."""
+    s = copy.copy(settings)
+    s.browser = True
+    s.browser_server = browser_tool.server_config(None, settings.browser_channel, headless=True,
+                                                  sites="localhost,127.0.0.1")
+    return _agent(codex, sdk, s, name="browser-check", model=model, effort="medium", sandbox=sdk.Sandbox.read_only,
+                  instructions=webcheck.CHECK_INSTRUCTIONS.format(rules=_SHARED_RULES), cwd=workspace_root,
+                  on_event=on_event, ephemeral=True, notes=False)
 
 
 def with_attachments(sdk, text: str, attachments=()):
@@ -417,8 +435,10 @@ class DualMode(_Mode):
                 report = fix_worker.send(f"THE PLANNER REVIEWED THE WORK AND ASKS FOR CHANGES:\n{review}\n\n"
                                          "Make these fixes.")
                 diff_text = changes_for_review(fix_worker.last_diff)
+            seen = self.browser_check(report, diff_text, fix_worker.last_diff if round_number else "")
             self._notice("Planner is checking the work.")
-            verdict, review = self.review(f"WORKER'S REPORT:\n{report}\n\n{diff_text}\n\nCheck the work and give your verdict.")
+            verdict, review = self.review(f"WORKER'S REPORT:\n{report}\n\n{diff_text}{seen}\n\n"
+                                          "Check the work and give your verdict.")
             if verdict == "APPROVED":
                 self._notice("Planner approved the work.")
                 return review
@@ -428,7 +448,44 @@ class DualMode(_Mode):
         self._notice(f"Still not approved after {self.max_review_rounds} rounds of fixes; stopping so you can decide.")
         return review
 
+    def browser_check(self, *diffs: str) -> str:
+        """When the changes touch web pages: what a separate checker saw in a real browser, as a BROWSER CHECK
+        section for the planner's review; "" otherwise (see webcheck.py)."""
+        s = self.settings
+        paths = webcheck.changed_paths(*diffs)
+        if not s.browser_check or not paths or not webcheck.is_web_change(paths, self.root):
+            return ""
+        why = browser_tool.available()
+        if why:
+            if not getattr(self, "_told_no_browser", False):
+                self._notice(f"No browser check of the web pages: {why} (CODEX_APP_BROWSER_CHECK=no hides this).")
+                self._told_no_browser = True
+            return ""
+        own = not s.check_url
+        self._notice("Browser check: a checker opens the changed pages in a headless browser before the verdict.")
+        checker = make_checker(self.codex, self.sdk, self.root, s, s.worker_model, on_event=self.on_event)
+        try:
+            with (webcheck.StaticServer(self.root) if own else nullcontext()) as server:
+                base = server.url if own else s.check_url
+                message = webcheck.task(getattr(self, "_task", ""), paths, base,
+                                        webcheck.html_pages(self.root) if own else [], own)
+                try:
+                    raw = checker.send(message, output_schema=webcheck.CHECK_SCHEMA)
+                    try:
+                        text = webcheck.report(json.loads(raw))
+                    except (ValueError, TypeError, AttributeError):
+                        text = raw  # it answered in text after all
+                except self.sdk.CodexError as e:
+                    text = f"Result: COULD NOT CHECK\nThe browser check failed: {e}"
+        except OSError as e:  # no port for the page server
+            text = f"Result: COULD NOT CHECK\nThe pages couldn't be served: {e}"
+        finally:
+            checker.discard()
+        self.on_event(checker.name, "text", text)
+        return f"\n\nBROWSER CHECK (a separate checker opened the changed pages in a real browser):\n{text}"
+
     def run(self, task: str, attachments=(), profile: str = "coding") -> str:
+        self._task = task
         if profile in ("chat", "maths"):
             # Nothing to build: the planner answers, and the worker isn't called.
             return self._ask(self.planner, f"QUESTION (answer it yourself; no plan is needed):\n{task}",
@@ -476,6 +533,8 @@ When you get the WORKERS' REPORTS:
   check the parts fit together, and run the tests if the project has them. Workers may each have worked
   in their own copy of the project; their changes are merged into the project folder before you check.
   A part marked NOT MERGED is not in the project folder: ask for it to be redone in your fixes.
+- A BROWSER CHECK, when there is one, is what a separate checker saw when it opened the changed pages in a
+  real browser. Weigh it like a test result.
 - Give your verdict: APPROVED, or CHANGES_NEEDED with the concrete fixes."""
 
 TEAM_PLAN_SCHEMA = {
@@ -575,6 +634,7 @@ class TeamMode(DualMode):
         super().load_state(state)
 
     def run(self, task: str, attachments=(), profile: str = "coding") -> str:
+        self._task = task  # for the browser check
         if profile in ("chat", "maths"):
             return self._ask(self.planner, f"QUESTION (answer it yourself; no plan is needed):\n{task}",
                              attachments, profile)
