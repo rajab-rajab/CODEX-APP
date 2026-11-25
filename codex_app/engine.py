@@ -51,10 +51,50 @@ def start_review(codex, thread_id: str, target: dict):
     return TurnHandle(client, thread_id, started.turn.id, _subscription=subscription)
 
 
-def threads(codex, cwd: str, limit: int = 20) -> list:
+SEARCH_SCAN = 200  # recent conversations whose first message and branch a search also looks through
+
+
+def threads(codex, cwd: str, limit: int = 20, search: str = "") -> list:
     """Codex's own saved conversations for a project folder, newest first, from every Codex client:
-    this app, the official Codex CLI, VS Code and others."""
-    return list(codex.thread_list(cwd=cwd, limit=limit).data or [])
+    this app, the official Codex CLI, VS Code and others.
+
+    search: words that must all appear in the conversation's title, first message, git branch or ID.
+    The engine searches titles itself (official Codex's thread search); the recent SEARCH_SCAN
+    conversations are also looked through for the rest."""
+    if not search.strip():
+        return list(codex.thread_list(cwd=cwd, limit=limit).data or [])
+    found = {}
+    try:  # the engine's own title search goes back further than the scan below
+        for t in codex.thread_list(cwd=cwd, limit=limit, search_term=search.strip()).data or []:
+            found[t.id] = t
+    except Exception:
+        pass  # an engine without search_term: the scan below still finds them
+    for t in codex.thread_list(cwd=cwd, limit=SEARCH_SCAN).data or []:
+        if t.id not in found and thread_matches(t, search):
+            found[t.id] = t
+    newest = sorted(found.values(), key=lambda t: getattr(t, "updated_at", 0) or 0, reverse=True)
+    return newest[:limit]
+
+
+def thread_items(codex, thread_id: str) -> list:
+    """Every item (commands, edits, messages ...) of a saved conversation, oldest first: for looking at
+    what a subagent did."""
+    from openai_codex import Thread
+    data = Thread(codex._client, thread_id).read(include_turns=True)
+    thread = getattr(data, "thread", data)
+    return [getattr(i, "root", i) for turn in getattr(thread, "turns", None) or [] for i in getattr(turn, "items", None) or []]
+
+
+def thread_branch(thread) -> str:
+    return str(getattr(getattr(thread, "git_info", None), "branch", None) or "")
+
+
+def thread_matches(thread, search: str) -> bool:
+    """True if every word of `search` is in the conversation's title, first message, branch or ID."""
+    words = search.lower().split()
+    text = " ".join(str(x or "") for x in (getattr(thread, "name", None), getattr(thread, "preview", None),
+                                            thread_branch(thread), getattr(thread, "id", None))).lower()
+    return bool(words) and all(w in text for w in words)
 
 
 def rate_limits(codex):

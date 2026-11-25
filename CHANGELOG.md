@@ -2,6 +2,18 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Subagents are shown**: when Codex starts helper agents of its own, you see each one start, Codex
+  waiting for them, and each one finish or fail, like official Codex's subagent view. Until now they
+  worked unseen. Subagents run in conversations of their own, so the secret guard can't stop their
+  commands as they start. Instead, after each turn the app looks through what every subagent did and
+  warns you if one touched a secret file. The `--json` result counts them. The engine reports tokens
+  only for the main conversation, so usage can look lower with subagents.
+- **Conversation search**: `/history search <words>` (or `/history <words>`) finds this project's Codex
+  conversations by title, first message, git branch or ID, like official Codex's thread search.
+  `/history <number>` then carries on with one of the matches. Listings show each conversation's branch.
+
 ## 1.15.0 (2026-11-25)
 
 - **Benchmark** (`py bench/run.py`): it measures how often single, dual and team mode get fixed tasks right,

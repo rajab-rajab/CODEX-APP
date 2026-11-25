@@ -248,6 +248,7 @@ Most of these are the same as official Codex's.
 | `/schedule <when> <task>` | Run a task by itself at set times, like official Codex's automations (see "Scheduled tasks"). `/schedule` lists them; `/schedule run\|log\|undo\|remove <id>` |
 | `/review [what]` | Codex's own code review, as in official Codex, read-only and in its own conversation: `uncommitted` (default), `branch <base>`, `commit <sha>`, or your own instructions. The engine doesn't report a review's tokens, so `/usage` shows 0 for the reviewer |
 | `/history [number]` | Codex's conversations for this project from every Codex client (this app, the official Codex CLI, VS Code ...); a number carries on with one |
+| `/history search <words>` | Find this project's conversations by title, first message, git branch or ID, as in official Codex's thread search (`/history <words>` works too); then `/history <number>` carries on with one of the matches |
 | `/mention <file>`, or `@path` in a message | Attach a file to your message |
 | `/image <file>` | Attach an image to your next message |
 | `/skills`, or `$name` in a message | List the skills Codex can use; `$name` attaches one to your message |
@@ -270,6 +271,26 @@ Most of these are the same as official Codex's.
 While Codex works you see what official Codex shows too: its plan as a checklist (`[x]` done, `[>]`
 doing, `[ ]` to do), each command and edit, the diff of the files it changed, and after each answer the
 tokens used and how much of the model's context is left.
+
+**Subagents.** Codex can start helper agents of its own for parts of a task, for example when you ask
+it to "use two subagents in parallel". You see them as they work:
+
+```text
+  > codex: subagent shapes: started (gpt-6.2-sol, low)
+  > codex: subagent words: started (gpt-6.2-sol, low)
+  > codex: subagent: wait for subagents
+    subagent shapes completed
+```
+
+Problems are shown too, for example `subagents: 1 completed, 1 errored (...)`. The `--json` result says
+how many subagents ran. Each subagent works in a conversation of its own, and that has two
+consequences:
+
+- **Secret files.** The secret guard can't stop a subagent's commands as they start (see "Secret
+  files"). After each turn, the app looks through every subagent's commands and edits instead, and warns
+  you plainly if one read or changed a secret file.
+- **Tokens.** The engine reports usage only for the main conversation, so with subagents `/usage` and
+  costs can be lower than what was really used.
 
 **Ctrl+C** (or `/stop`) stops the current task. Codex is told to stop, and you can carry on with a new
 message. Anything else you type while Codex works steers it.
@@ -335,6 +356,12 @@ keeps Codex away from them in four ways:
 
 The guard acts the moment a command starts, so a very fast command may still finish first. For a
 project with real secrets the safest place for them is still outside the project folder.
+
+**Subagents** (helper agents Codex starts by itself) run their commands in conversations of their own,
+which the guard can't watch as they happen. Codex's sandbox still applies to them. After each turn the
+app reads what every subagent did, and if one read or changed a secret file it says so in red: what it
+read may have reached OpenAI, so change that secret if it matters. In a live test, a subagent asked to
+show every file's contents left `.env` alone by itself.
 
 ## Reliability
 
