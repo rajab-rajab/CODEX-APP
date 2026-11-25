@@ -23,7 +23,7 @@ import urllib.parse
 from pathlib import Path
 
 from codex_app import __version__, approvals, browser, costs, engine, export, gitflow, outside, prefs, profiles, \
-    memory, plugins, prfix, protect, schedule, sessions, undo, updater
+    memory, perms, plugins, prfix, protect, schedule, sessions, undo, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
 from codex_app.modes import INIT_TASK, MODES, make_reviewer, make_writer, project_instructions, review_task, \
@@ -439,6 +439,23 @@ class App:
     def refresh_memory(self) -> None:
         self.settings.memory_notes = memory.instructions(self.root) if self.settings.memory else ""
 
+    def fix_permissions(self) -> None:
+        """Windows: give back files Codex's sandbox left this account unable to open (see codex_app/perms.py)."""
+        if not self.settings.fix_permissions or not perms.applies():
+            return
+        try:
+            fixed, left = perms.check_and_repair(self.root)
+        except Exception as e:  # never let a repair stop the app
+            print(f"{YELLOW}Couldn't check the project's file permissions: {e}{RESET}")
+            return
+        if fixed:
+            print(f"{GREY}  Codex's sandbox had left {len(fixed)} file(s) you couldn't open ("
+                  f"{', '.join(fixed[:5])}{' ...' if len(fixed) > 5 else ''}); your account has access again.{RESET}")
+        if left:
+            print(f"{YELLOW}  Still unreadable for your account (Codex's sandbox owns them): {', '.join(left[:5])}"
+                  f"{' ...' if len(left) > 5 else ''}. /undo and git can't use them. As administrator: "
+                  f"{perms.manual_fix(self.root, left)}{RESET}")
+
     def remember(self) -> None:
         """After a task: keep the notes the agents' answers asked for, and say what was kept."""
         heard, self._heard = self._heard, []
@@ -594,6 +611,7 @@ class App:
             if any(len(a.turns_log) > point["marks"].get(a.name, 0) for a in self.mode.agents()):
                 self.undo_points.append(point)
             self.save()
+            self.fix_permissions()
             if error != "stopped":
                 self.remember()
             self._heard = []
