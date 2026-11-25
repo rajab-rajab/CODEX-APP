@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.18.1 (2026-11-26)
 
 - Benchmark: results are saved after every run, so a stopped benchmark keeps the runs it finished. Its report
   says "Partial: N of M planned runs". Before, a long run stopped part-way lost its whole report.
