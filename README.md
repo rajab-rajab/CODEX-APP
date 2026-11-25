@@ -220,6 +220,7 @@ Most of these are the same as official Codex's.
 | `/export [file]` | Save this conversation (your messages, answers, commands with output, diffs) as a Markdown file |
 | `/prices [model in cached out \| model off]` | Set what a model costs, in dollars per million tokens |
 | `/stats [days\|all]` | Tokens and cost per day and per project (default: the last 7 days) |
+| `/schedule <when> <task>` | Run a task by itself at set times, like official Codex's automations (see "Scheduled tasks"). `/schedule` lists them; `/schedule run\|log\|undo\|remove <id>` |
 | `/review [what]` | Codex's own code review, as in official Codex, read-only and in its own conversation: `uncommitted` (default), `branch <base>`, `commit <sha>`, or your own instructions. The engine doesn't report a review's tokens, so `/usage` shows 0 for the reviewer |
 | `/history [number]` | Codex's conversations for this project from every Codex client (this app, the official Codex CLI, VS Code ...); a number carries on with one |
 | `/mention <file>`, or `@path` in a message | Attach a file to your message |
@@ -421,6 +422,39 @@ tokens per model, but never your messages. `/stats` sums them up per day and per
 7 days (`/stats 30`, `/stats all`). It uses today's prices, so it shows a cost for earlier work too once
 you set a price. Set a monthly spend limit in your OpenAI account as well.
 
+## Scheduled tasks
+
+`/schedule` makes Codex App run a task by itself at set times, like official Codex's automations. It
+uses your computer's own scheduler, so nothing has to stay open:
+
+```text
+/schedule daily 09:00 run the tests and fix what fails
+/schedule weekdays 18:00 update CHANGELOG.md from today's commits
+/schedule mon,thu 08:30 check the dependencies for updates and list them
+/schedule every 3 hours look for new TODO comments and list them
+```
+
+Times are written as `daily`, `weekdays`, `weekends`, days (`mon,wed,fri` or `monday`) followed by
+`HH:MM`, or `hourly` / `every N hours`. The app shows what it will do and asks before creating it.
+
+- **What a run uses:** the project, mode, permission, approval, power, profile and models of the session
+  you made it in. A run never asks anything, because no one is there to answer. So schedules never use
+  `full` permission, the `ask` approval mode becomes `deny_all`, and the browser is off.
+- **Windows:** a Task Scheduler task in the `CodexApp` folder. It runs only while you are signed in (no
+  password is stored), also on battery, never twice at once, catches up a run missed while the computer
+  was off, and is stopped after 4 hours. It starts `pythonw.exe`, so no window opens.
+- **Linux and macOS:** a crontab line marked `# codex-app:<id>`.
+- **Results:** each run works like `--json` (below). Its result and log go to
+  `~/.codex-app/schedules/runs/<id>/` (the newest 50 are kept), and Windows shows a notification when it
+  ends. `/schedule` lists your schedules with each one's last result, and `/schedule log <id>` shows
+  its recent runs and the last answer.
+- **Undo:** each run takes a snapshot of the project's files first (git projects). `/schedule undo <id>`
+  shows what would change, asks, then puts the files back as they were before the last run. This also
+  undoes changes made to those files after that run.
+- `/schedule run <id>` starts one in the background now. `/schedule remove <id>` deletes it from the app
+  and from the computer's scheduler.
+- Every run costs tokens like any task, so `/stats` counts them too.
+
 ## Automation
 
 `--json` runs one task and prints only the result to stdout, as one JSON object; everything else goes
@@ -508,6 +542,7 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/selftest.py` | `--selftest`: checks the engine still has everything the app uses |
 | `codex_app/export.py` | `/export`: a conversation as Markdown |
 | `codex_app/costs.py` | `/prices` and `/stats`: model prices and the usage log |
+| `codex_app/schedule.py` | `/schedule`: saved schedules, Task Scheduler and cron entries, run results |
 | `.github/workflows/tests.yml` | The tests on GitHub, on Windows and Linux |
 | `.github/workflows/engine-watch.yml`, `.github/scripts/engine_watch.py` | The weekly check of the newest Codex engine |
 | `.github/workflows/release.yml` | GitHub Releases with CHANGELOG notes |
