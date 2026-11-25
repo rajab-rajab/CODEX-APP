@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.13.0 (2026-11-25)
 
 - **`/pr fix`**: Codex fixes a pull request's failing checks and open review comments, like the official
   Codex app's pull request review. The app reads them with `gh`: the failing checks with the end of each
