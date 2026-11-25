@@ -17,7 +17,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import approvals, browser as browser_tool, profiles, protect
+from . import approvals, browser as browser_tool, profiles, protect, worktrees
 from .agent import CodexAgent, Usage
 from .config import Settings
 
@@ -468,8 +468,10 @@ When you get a TASK:
 - If the task needs no change to files (a question), put your full answer in "answer" and no parts.
 
 When you get the WORKERS' REPORTS:
-- Each comes with the exact diff Codex recorded. Review the diffs rather than re-reading whole files,
-  check the parts fit together, and run the tests if the project has them.
+- Each comes with the exact diff of that part. Review the diffs rather than re-reading whole files,
+  check the parts fit together, and run the tests if the project has them. Workers may each have worked
+  in their own copy of the project; their changes are merged into the project folder before you check.
+  A part marked NOT MERGED is not in the project folder: ask for it to be redone in your fixes.
 - Give your verdict: APPROVED, or CHANGES_NEEDED with the concrete fixes."""
 
 TEAM_PLAN_SCHEMA = {
@@ -491,6 +493,15 @@ TEAM_PLAN_SCHEMA = {
     "required": ["answer", "parts"],
     "additionalProperties": False,
 }
+
+
+WORKTREE_NOTE = """
+
+You work in your own copy of the project (a git worktree), so other workers' changes don't show up here
+and yours don't disturb them; everyone's changes are merged into the project when all are done. Change
+only what your part needs. Files that .gitignore leaves out (such as .env, installed dependencies and
+build output) are not in your copy: if a test can't run without them, say so in your report, and the
+planner will run it on the merged result."""
 
 
 def _norm_file(name: str) -> str:
@@ -588,24 +599,84 @@ class TeamMode(DualMode):
             for i in bucket:
                 files = ", ".join(parts[i].get("files") or []) or "files not listed"
                 self._notice(f"Part {i + 1} -> worker-{b + 1}: {parts[i].get('title', '')} ({files})")
-        results, errors = {}, []
+        for b in range(len(buckets)):
+            self._worker(b)  # create them here, not on the worker threads
+        trees = self._open_worktrees(len(buckets))
+        try:
+            results, merge_notes = self._run_parts(task, parts, buckets, attachments, trees)
+        finally:
+            self._close_worktrees(trees)
+
+        limit = max(4_000, REVIEW_DIFF_LIMIT // len(parts))
+        report = "\n\n".join(
+            f"--- {results[i][0]}, part {i + 1}: {parts[i].get('title', '')}\n{results[i][1]}\n"
+            f"{changes_for_review(results[i][2], limit).replace(chr(39) + 'S CHANGES', chr(39) + 'S CHANGES FOR THIS PART')}"
+            f"{merge_notes.get(i, '')}"
+            for i in sorted(results))
+        return self._review_loop(f"(the team's reports, one per part)\n{report}", "", self._worker(0))
+
+    # --- worktrees: each worker in its own copy of the project (see worktrees.py) ------------------
+
+    def _open_worktrees(self, count: int) -> list:
+        """One worktree per worker when several work at once, or [] to work in the project folder."""
+        if count < 2 or not self.settings.team_worktrees or self.settings.permission == "plan":
+            return []
+        if not worktrees.available(self.root):
+            return []  # not a git project, or git older than 2.40: the shared folder, as before
+        worktrees.cleanup_stale(self.root)
+        base = worktrees.base_commit(self.root)
+        made = []
+        try:
+            if base is None:
+                raise RuntimeError("couldn't take a snapshot of the project")
+            for b in range(count):
+                made.append(worktrees.create(self.root, base, f"worker-{b + 1}"))
+        except RuntimeError as e:
+            self._notice(f"Separate worktrees aren't possible here ({e}); the workers share the project folder.")
+            for tree in made:
+                tree.remove()
+            return []
+        for b, tree in enumerate(made):
+            self._worker(b).set_cwd(tree.cwd)
+        self._notice(f"Each worker has its own copy of the project (a git worktree); their changes are merged "
+                     f"into {self.root} when they are done.")
+        return made
+
+    def _close_worktrees(self, trees: list) -> None:
+        for b, tree in enumerate(trees):
+            self._worker(b).set_cwd(self.root)  # back to the project folder for fixes and later messages
+            try:
+                tree.remove()
+            except Exception:
+                pass  # `git worktree prune` at the next team task tidies up
+
+    def _run_parts(self, task: str, parts: list, buckets: list, attachments, trees: list) -> tuple:
+        """Run every bucket on its own worker at the same time, then merge worktrees back in order.
+        ({part: (worker name, report, diff)}, {part: note for the planner})."""
+        results, errors, finals = {}, [], {}
 
         def work(b: int, bucket: list) -> None:
-            worker = self._worker(b)
+            worker, tree = self._worker(b), (trees[b] if trees else None)
+            before = tree.base if tree else None
             for n, i in enumerate(bucket):
                 part = parts[i]
-                text = (f"TASK (the whole job):\n{task}\n\nYOUR PART ({part.get('title', '')}):\n{part['instructions']}"
-                        f"\n\nOther workers are doing the other parts at the same time. Change only the files for "
-                        f"your part: {', '.join(part.get('files') or []) or 'as the instructions say'}.")
+                where = (WORKTREE_NOTE if tree else
+                         f"\n\nOther workers are doing the other parts at the same time. Change only the files for "
+                         f"your part: {', '.join(part.get('files') or []) or 'as the instructions say'}.")
+                text = f"TASK (the whole job):\n{task}\n\nYOUR PART ({part.get('title', '')}):\n{part['instructions']}{where}"
                 try:
                     report = worker.send(with_attachments(self.sdk, text, attachments if n == 0 else ()))
-                    results[i] = (worker.name, report, worker.last_diff)
+                    diff = worker.last_diff
+                    if tree:  # git's exact diff for this part, from the worker's own copy
+                        now = tree.tree()
+                        diff, before = (tree.diff(now, before) or diff), (now or before)
+                    results[i] = (worker.name, report, diff)
                 except Exception as e:  # reported to the planner, never lost
                     errors.append(f"{worker.name}, part {i + 1}: {e}")
                     results[i] = (worker.name, f"[failed: {e}]", "")
+            if tree:
+                finals[b] = tree.tree()
 
-        for b in range(len(buckets)):
-            self._worker(b)  # create them here, not on the worker threads
         threads = [threading.Thread(target=work, args=(b, bucket), daemon=True) for b, bucket in enumerate(buckets)]
         self._notice(f"{len(buckets)} worker{'s' if len(buckets) > 1 else ''} at work.")
         for t in threads:
@@ -615,13 +686,32 @@ class TeamMode(DualMode):
                 t.join(0.2)  # short waits, so Ctrl+C still stops everything
         if errors:
             self._notice("Some parts failed: " + "; ".join(errors))
+        notes = {}
+        for b, tree in enumerate(trees):
+            notes.update(self._merge(b, tree, finals.get(b), buckets[b]))
+        return results, notes
 
-        limit = max(4_000, REVIEW_DIFF_LIMIT // len(parts))
-        report = "\n\n".join(
-            f"--- {results[i][0]}, part {i + 1}: {parts[i].get('title', '')}\n{results[i][1]}\n"
-            f"{changes_for_review(results[i][2], limit).replace(chr(39) + 'S CHANGES', chr(39) + 'S CHANGES FOR THIS PART')}"
-            for i in sorted(results))
-        return self._review_loop(f"(the team's reports, one per part)\n{report}", "", self._worker(0))
+    def _merge(self, b: int, tree, final, bucket: list) -> dict:
+        """Merge one worker's copy into the project folder. {part: note for the planner} if it didn't."""
+        name = self._worker(b).name
+        if final is None:
+            merged = worktrees.Merged(False, [], [], "its files couldn't be read with git")
+        elif final == worktrees.base_tree(tree):
+            return {}  # it changed nothing
+        else:
+            merged = worktrees.merge_back(self.root, tree.base, final)
+        if merged.ok:
+            if merged.files:
+                self._notice(f"Merged {name}'s changes: {', '.join(p for _, p in merged.files)}.")
+            return {}
+        if merged.conflicts:
+            why = f"it conflicts with another part in {', '.join(merged.conflicts)}"
+        else:
+            why = merged.error
+        self._notice(f"{name}'s changes were NOT merged: {why}. The planner will have them redone.")
+        note = (f"\nNOT MERGED: {why}. These changes are NOT in the project folder; the diff above shows what "
+                "the part did. Ask for it to be redone in your fixes.")
+        return {i: note for i in bucket}
 
 
 MODES = {"single": SingleMode, "dual": DualMode, "team": TeamMode}

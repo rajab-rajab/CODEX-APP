@@ -22,6 +22,17 @@ In dual and team mode:
 - The planner's verdict comes as **structured output** (JSON that Codex must follow), so it can't be
   missed or misread. If an engine or model can't do that, the app falls back to a text verdict.
 - Parts that would change the same file never run at the same time in team mode.
+- In team mode, each worker gets **its own git worktree**, a temporary copy of the project, as in
+  official Codex. Workers then never see each other's half-written files or test runs. The copy starts
+  from the project as it is now, uncommitted changes and new files included; files that `.gitignore`
+  leaves out (`.env`, installed dependencies, build output) are not copied, so the planner runs the
+  tests on the merged result. When the workers are done, their changes are merged into your project
+  folder with git's three-way merge, one worker after another, so edits to different lines of one file
+  both land. A part that conflicts is left out and the planner has it redone. Your branches, index,
+  stash and commits are never touched, and the worktrees are deleted afterwards. If you stop the task
+  (Ctrl+C or `/stop`) while workers are busy, their unmerged work is thrown away. This needs a git
+  project and git 2.40 or newer; otherwise, with one worker, or with `CODEX_APP_TEAM_WORKTREES=no`,
+  workers share the project folder as before.
 
 ## Built-in browser
 
@@ -381,6 +392,7 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_PROFILE` | `auto` | Task profile: `auto`, `coding`, `chat`, `maths` |
 | `CODEX_APP_POWER` | `normal` | Power level: `normal`, `high`, `max` |
 | `CODEX_APP_TEAM_SIZE` | `3` | Team mode: workers at the same time (1 to 8) |
+| `CODEX_APP_TEAM_WORKTREES` | `yes` | Team mode: each worker in its own git worktree (`no`: all share the project folder) |
 | `CODEX_APP_SECRET_GUARD` | `yes` | Stop a turn the moment Codex starts to read or change a secret file |
 | `CODEX_APP_RETRIES` | `3` | Automatic retries when OpenAI is busy (0 to turn off) |
 | `CODEX_APP_NOTIFY` | `yes` | Beep and show a notification when a long task finishes |
@@ -490,6 +502,7 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/profiles.py` | Task profiles (coding, chat, maths) and power presets |
 | `codex_app/goals.py` | Goal mode: Codex working on its own until a goal is done |
 | `codex_app/undo.py` | File snapshots and restoring them for `/undo` |
+| `codex_app/worktrees.py` | Team mode: a git worktree per worker, and merging their work back |
 | `codex_app/gitflow.py` | `/commit` and `/pr`: committing and opening pull requests |
 | `codex_app/prefs.py` | Saved preferences per project (`/save`) and the finish signal |
 | `codex_app/selftest.py` | `--selftest`: checks the engine still has everything the app uses |

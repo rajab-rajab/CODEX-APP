@@ -48,7 +48,8 @@ def _sdk_basics(sdk, codex, workdir):
                  "CodexConfig", "CodexError", "ServerBusyError", "InvalidRequestError", "MethodNotFoundError"):
         _need(hasattr(sdk, name), f"openai_codex.{name} is missing")
     turn = inspect.signature(sdk.Thread.turn).parameters
-    _need({"effort", "model", "sandbox", "output_schema"} <= set(turn), "Thread.turn lost parameters")
+    _need({"effort", "model", "sandbox", "output_schema", "cwd"} <= set(turn),
+          "Thread.turn lost parameters (cwd: team mode's worktrees)")
     _need(list(inspect.signature(sdk.Thread).parameters)[:2] == ["_client", "id"], "Thread(_client, id) changed")
     for name in ("steer", "interrupt", "stream"):
         _need(hasattr(sdk.TurnHandle, name), f"TurnHandle.{name} is missing")

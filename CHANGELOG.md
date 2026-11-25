@@ -2,6 +2,17 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Team mode: each worker in its own git worktree**, the way official Codex keeps parallel work apart.
+  Workers no longer see each other's half-written files or test runs. Each worker's copy starts from the
+  project as it is now, uncommitted changes and new files included (ignored files such as `.env` are
+  not copied). When the workers are done, their changes are merged back into the project folder with
+  git's three-way merge, so parts that edit different lines of one file both land. A part that conflicts
+  is left out, and the planner is told to have it redone. Your branches, index, stash and commits are
+  never touched, and the worktrees are removed afterwards. This needs git 2.40 or newer and a git
+  project; otherwise, or with `CODEX_APP_TEAM_WORKTREES=no`, workers share the project folder as before.
+
 ## 1.9.1 (2026-11-25)
 
 - **Misuse protection for the browser**, whatever the user says or approves:
