@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.17.0 (2026-11-26)
 
 - **Plugins** (`/plugins`): Codex's plugin marketplace from Codex App, like the official apps' plugin
   directory. It lists what is installed (and what is off in Codex App), searches what can be installed,
