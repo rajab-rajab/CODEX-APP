@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.16.0 (2026-11-25)
 
 - **Subagents are shown**: when Codex starts helper agents of its own, you see each one start, Codex
   waiting for them, and each one finish or fail, like official Codex's subagent view. Until now they
