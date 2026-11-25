@@ -192,7 +192,16 @@ def test_approval_answers_come_through_the_pump(tmp_path):
     import main
     app = main.App(FakeCodex({}), sdk, tmp_path, Settings(), "single")
     lines = queue.Queue()
-    app.pump = main.InputPump(app, read=lambda: lines.get(timeout=10))
+
+    def read():  # None (or nothing for 10s) is end of input, so the pump's thread ends with the test
+        try:
+            line = lines.get(timeout=10)
+        except queue.Empty:
+            raise EOFError
+        if line is None:
+            raise EOFError
+        return line
+    app.pump = main.InputPump(app, read=read)
     app._busy = True
     got = []
     t = threading.Thread(target=lambda: got.append(app.ask("Allow it? ")), daemon=True)  # asked from Codex's side
@@ -203,6 +212,7 @@ def test_approval_answers_come_through_the_pump(tmp_path):
         threading.Event().wait(0.05)
     lines.put("y")
     t.join(5)
+    lines.put(None)
     assert got == ["y"]
 
 
