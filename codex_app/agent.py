@@ -155,6 +155,7 @@ class CodexAgent:
         self._goal = None
         self._sandbox_changed = False
         self._model_changed = False
+        self._cwd_changed = False
         # secret_guard(item) -> why, or None: checks each command and edit as Codex starts it (protect.py).
         self.secret_guard = secret_guard
         self.ephemeral = ephemeral          # helper conversations (reviews, commit messages) aren't saved
@@ -242,6 +243,13 @@ class CodexAgent:
         self.sandbox = sandbox
         self._sandbox_changed = True  # sent with the next turn; Codex keeps it for later turns
 
+    def set_cwd(self, cwd: Path) -> None:
+        """Work in another folder from the next turn on (team workers in their own worktrees). The
+        sandbox goes with it, so the writable folder is the new one."""
+        if Path(cwd) != self.cwd:
+            self.cwd = Path(cwd)
+            self._cwd_changed = True
+
     def set_model(self, model: str, effort: Optional[str] = None) -> None:
         self.model = model
         self.effort = effort or self.effort
@@ -282,6 +290,10 @@ class CodexAgent:
 
     def _options(self, effort: Optional[str]) -> dict:
         options = {"effort": effort or self.effort}
+        if self._cwd_changed:
+            options["cwd"] = str(self.cwd)
+            self._sandbox_changed = True  # re-sent with it, so the sandbox follows the new folder
+            self._cwd_changed = False
         if self._sandbox_changed:
             options["sandbox"] = self.sandbox
             self._sandbox_changed = False
@@ -353,8 +365,8 @@ class CodexAgent:
         """Official Codex's /goal: Codex keeps working, over as many turns as it needs, until the goal is
         done, blocked, or out of budget. Returns its final answer."""
         self._ensure_thread()
-        if self._sandbox_changed or self._model_changed:
-            self._sandbox_changed = self._model_changed = False
+        if self._sandbox_changed or self._model_changed or self._cwd_changed:
+            self._sandbox_changed = self._model_changed = self._cwd_changed = False
             self.thread = None  # resume with the new settings, so the goal's turns use them
             self._ensure_thread()
         self._goal = goal = goals.start(self.codex, self.thread_id, objective, token_budget)
