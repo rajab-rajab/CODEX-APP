@@ -47,12 +47,21 @@ def _key(name: str) -> str:
     return name if re.fullmatch(r"[A-Za-z0-9_@-]+", name) else '"' + name.replace('"', '\\"') + '"'
 
 
+def _recorded_plugins() -> list:
+    try:
+        from . import plugins
+        return plugins.recorded()
+    except Exception:
+        return []
+
+
 def overrides(home: Path = None) -> tuple[tuple, list]:
     """(engine launch overrides, what they switch off, for messages) to keep Codex to the project."""
     config = _read_config((home or codex_home()) / "config.toml")
     plugins = {name for name, value in (config.get("plugins") or {}).items()
                if isinstance(value, dict) and value.get("enabled", True) and OUTSIDE.search(name)}
     plugins |= set(BUILT_IN_PLUGINS)
+    plugins |= set(_recorded_plugins())  # installed from Codex App with --outside-tools (see plugins.py)
     servers = {name for name, value in (config.get("mcp_servers") or {}).items()
                if isinstance(value, dict) and value.get("enabled", True) and OUTSIDE.search(name)}
     servers |= set(BUILT_IN_SERVERS)

@@ -253,6 +253,7 @@ Most of these are the same as official Codex's.
 | `/image <file>` | Attach an image to your next message |
 | `/skills`, or `$name` in a message | List the skills Codex can use; `$name` attaches one to your message |
 | `/mcp` | List the MCP servers (external tools such as GitHub or databases) Codex is set up with, their status and tools |
+| `/plugins [available [words] \| show \| install \| remove <name>]` | Codex's plugin marketplace, like the official apps' plugin directory: what is installed, what can be, and what a plugin adds. Installs and removals ask first (see "Plugins") |
 | `/secrets [on\|off]` | List secret files in the project; turn the secret guard on or off |
 | `/browser [on\|off]` | Codex App's private browser for the next conversation (see "Built-in browser") |
 | `/browser check [on\|off\|<url>]` | Dual and team mode: changed web pages are opened in a headless browser before the planner's verdict (the project folder, or your dev server's address) |
@@ -339,6 +340,35 @@ Codex is kept away from the system disk and system files in four ways:
    presentations) stay on.
 
 With `full` nothing stops Codex for real except instruction 4, so keep `workspace` unless you must.
+
+## Plugins
+
+`/plugins` reaches Codex's plugin marketplace, as the official Codex apps' plugin directory does: the
+official OpenAI marketplaces, plus any marketplace in the project folder.
+
+```text
+/plugins                      what is installed, and what is off in Codex App
+/plugins available latex      plugins you can install (all of them without words)
+/plugins show superpowers     what one adds: its skills, and anything that reaches outside the project
+/plugins install superpowers  install it (asks first)
+/plugins remove superpowers   remove it (asks first)
+```
+
+A plugin bundles **skills**, which are instructions for tasks such as PDFs, LaTeX or test-driven
+development. It can also bundle **MCP servers**, **app integrations** (Slack, Gmail ...), **hooks**
+(code that runs on events) and **scheduled tasks**. `/plugins show` sorts plugins into two kinds:
+
+- **Works with your files only**: skills, nothing else. It installs after your yes, and its skills are
+  used from the next conversation (`/skills` lists them, `$name` in a message uses one).
+- **Reaches outside the project**: anything with servers, apps, hooks or scheduled tasks. Those work
+  outside the sandbox, which is why Codex App keeps such tools off (see "Protecting your system"). So
+  Codex App only installs one when you started it with `--outside-tools`. It then records the plugin in
+  `~/.codex-app/outside-plugins.json`, so a normal start switches it off again. On this PC, the browser,
+  Chrome and computer-use plugins are of this kind (they have hooks or an MCP server), and the document,
+  PDF, spreadsheet and presentation plugins aren't.
+
+Plugins go into Codex's own settings (`~/.codex`), which the official Codex apps share: a plugin installed
+here is installed there too, and the other way round. Both questions say so.
 
 ## Secret files
 
@@ -635,6 +665,7 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/approvals.py` | Answering Codex's requests to leave the sandbox, and the `ask` mode |
 | `codex_app/protect.py` | Keeping Codex away from the system disk and system files |
 | `codex_app/outside.py` | Switching off computer use, browsers and account plugins for Codex App |
+| `codex_app/plugins.py` | `/plugins`: the marketplace, what a plugin adds, and which plugins reach outside the project |
 | `codex_app/browser_mcp.py` | The built-in browser: an MCP server with its safety rules |
 | `codex_app/browser.py` | The app's side of the browser: starting it and asking you before risky actions |
 | `codex_app/webcheck.py` | The browser check: which changes are web changes, the page server, the checker's report |
