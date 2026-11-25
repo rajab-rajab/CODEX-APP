@@ -118,6 +118,44 @@ def test_main_writes_results(tmp_path, monkeypatch):
     assert [r["mode"] for r in json.loads(js.read_text(encoding="utf-8"))["runs"]] == ["single", "team"]
 
 
+def fake_run(seen=None, stop_at=None, tmp=None):
+    calls = []
+
+    def run_one(name, data, folder, mode, repeat, work, timeout, extra=()):
+        calls.append(mode)
+        if seen is not None:  # what is on disk while the next run works
+            seen.append({p.suffix: p.read_text(encoding="utf-8") for p in tmp.glob("*.*")})
+        if stop_at is not None and len(calls) == stop_at:
+            raise KeyboardInterrupt
+        return {"task": name, "mode": mode, "repeat": repeat, "passed": True, "app_ok": True, "error": None,
+                "seconds": 5, "input_tokens": 10, "cached_tokens": 0, "output_tokens": 1, "cost_usd": None,
+                "models": [], "files_changed": [], "hidden_tests": ""}
+    return run_one
+
+
+def test_results_are_saved_after_every_run(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(bench, "run_one", fake_run(seen, tmp=tmp_path))
+    assert bench.main(["--tasks", "median-bug", "--modes", "single,dual,team", "--out", str(tmp_path)]) == 0
+    assert seen[0] == {}  # nothing before the first run ends
+    after_one = json.loads(seen[1][".json"])
+    assert len(after_one["runs"]) == 1 and after_one["planned_runs"] == 3 and after_one["complete"] is False
+    assert "**Partial: 1 of 3 planned runs.**" in seen[1][".md"]
+    [md] = tmp_path.glob("*.md")
+    [js] = tmp_path.glob("*.json")  # still one file of each: the same files, replaced
+    assert json.loads(js.read_text(encoding="utf-8"))["complete"] is True and "Partial" not in md.read_text(encoding="utf-8")
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_stopped_benchmark_keeps_what_it_finished(tmp_path, monkeypatch):
+    monkeypatch.setattr(bench, "run_one", fake_run(stop_at=3))
+    assert bench.main(["--tasks", "median-bug", "--modes", "single,dual,team", "--out", str(tmp_path)]) == 1
+    [js] = tmp_path.glob("*.json")
+    data = json.loads(js.read_text(encoding="utf-8"))
+    assert [r["mode"] for r in data["runs"]] == ["single", "dual"] and data["complete"] is False
+    assert "**Partial: 2 of 3 planned runs.**" in next(tmp_path.glob("*.md")).read_text(encoding="utf-8")
+
+
 def test_bad_options():
     with pytest.raises(SystemExit):
         bench.main(["--modes", "solo"])

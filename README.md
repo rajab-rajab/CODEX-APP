@@ -771,7 +771,9 @@ py bench/run.py --modes single,dual --repeat 3 --tasks median-bug,two-fixes
   tests copied in, so Codex never sees them, and a run passes only if all of them pass.
 - **What is recorded.** For each mode: runs passed, pass rate, median time, median tokens and total cost.
   Costs need prices for the models (`/prices`). The results go to `bench/results/<date-time>.md` and
-  `.json`, which git ignores.
+  `.json`, which git ignores. They are saved again after every run, so a benchmark that is stopped
+  (Ctrl+C, or the process ended) keeps every run it finished. Its report then starts with
+  "Partial: N of M planned runs", and the JSON has `"complete": false`.
 - **Costs.** Runs are billed like any task: 18 runs for all six tasks in all three modes. Memory, the
   browser check, the update check and the finish signal are off, and app data goes to a temporary folder,
   so your notes and `/stats` stay as they were. `--power high` runs every mode at a higher power level, and

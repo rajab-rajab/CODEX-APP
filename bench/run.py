@@ -235,6 +235,8 @@ def main(argv=None) -> int:
     total = len(tasks) * len(modes) * args.repeat
     print(f"{total} run(s): {len(tasks)} task(s) x {', '.join(modes)} x {args.repeat}. They are billed like any task.")
     work = Path(tempfile.mkdtemp(prefix="codex-bench-"))
+    out, stamp, when = Path(args.out), time.strftime("%Y%m%d-%H%M%S"), time.strftime("%Y-%m-%d %H:%M")
+    print(f"Results are saved after every run: {out / (stamp + '.md')} and .json")
     runs = []
     try:
         for repeat in range(1, args.repeat + 1):
@@ -246,22 +248,36 @@ def main(argv=None) -> int:
                     print(f"    {'PASSED' if run['passed'] else 'failed'} in {run['seconds']} s, "
                           f"{run['input_tokens'] + run['output_tokens']:,} tokens"
                           + (f" ({run['error']})" if run["error"] else ""), flush=True)
+                    save_results(out, stamp, when, runs, tasks, modes, total)  # a stopped run keeps what it did
+    except KeyboardInterrupt:
+        print(f"\nStopped after {len(runs)} of {total} run(s).")
     finally:
         if args.keep:
             print(f"Projects and logs kept in {work}")
         else:
             shutil.rmtree(work, ignore_errors=True)
-    when = time.strftime("%Y-%m-%d %H:%M")
+    report = save_results(out, stamp, when, runs, tasks, modes, total)
+    print("\n" + report + f"\nSaved: {out / (stamp + '.md')} and .json")
+    return 0 if len(runs) == total else 1
+
+
+def save_results(out: Path, stamp: str, when: str, runs: list, tasks: list, modes, total: int) -> str:
+    """Write the report and the JSON for the runs done so far (each file replaced whole, so a stopped
+    benchmark never leaves half a file). Returns the report."""
     rows = summarise(runs, modes)
     report = markdown(runs, rows, tasks, when, app_version())
-    out = Path(args.out)
+    if len(runs) < total:
+        report = report.replace("\n\n", f"\n\n**Partial: {len(runs)} of {total} planned runs.** The benchmark "
+                                       "was stopped, or is still running.\n\n", 1)
     out.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    (out / f"{stamp}.json").write_text(json.dumps({"when": when, "app_version": app_version(), "summary": rows,
-                                                   "runs": runs}, indent=2), encoding="utf-8")
-    (out / f"{stamp}.md").write_text(report, encoding="utf-8")
-    print("\n" + report + f"\nSaved: {out / (stamp + '.md')} and .json")
-    return 0
+    data = {"when": when, "app_version": app_version(), "planned_runs": total, "complete": len(runs) == total,
+            "summary": rows, "runs": runs}
+    for suffix, text in ((".json", json.dumps(data, indent=2)), (".md", report)):
+        path = out / f"{stamp}{suffix}"
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    return report
 
 
 if __name__ == "__main__":
