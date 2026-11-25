@@ -146,17 +146,134 @@ _EXCLUDING = {"-ne", "-notlike", "-notmatch", "-notin", "-notcontains", "-exclud
               "--exclude-from", "-x", "-not", "!=", "-i", "--ignore", "--iglob", "-v", "--invert-match"}
 
 
+# A pattern is text to look for, not a file to open: `-notmatch '^\.env$'`, `rg '\.env\b' src`,
+# `Select-String -Pattern '.env'`. (Found in real runs: Codex searching for, or filtering out, the names of
+# secret files set off the guard, and careful models do exactly that because they are told to avoid them.)
+_PATTERN_OPERATOR = re.compile(r"(?i)(?<![\w-])-(?:[ci])?(?:not)?(?:match|like)\b|(?<![\w-])-(?:pattern|replace|split)\b"
+                               r"|(?<![\w-])(?:-e|--regexp)(?=\s)")
+_QUOTED = re.compile(r"""'[^']*'|"[^"]*\"""")
+# Commands that read, copy or open what reaches them through a pipeline or loop.
+_READS_CONTENT = re.compile(
+    r"(?i)\b(get-content|gc|cat|type|more|less|head|tail|select-string|sls|copy-item|copy|cp|move-item|mv|"
+    r"import-csv|import-clixml|convertfrom-json|invoke-item|ii|start-process|out-file|set-content|add-content|"
+    r"compress-archive|foreach-object|%|xargs|openfile|readalltext|readalllines|readallbytes|\[io\.file\])\b|"
+    r"\|\s*%")
+_SEARCH_TOOLS = {"rg", "grep", "egrep", "fgrep", "ag", "ack", "findstr", "git-grep"}
+_TAKES_VALUE = {"-g", "--glob", "--iglob", "-t", "--type", "-T", "--type-not", "-m", "--max-count", "-A", "-B", "-C",
+                "--context", "--after-context", "--before-context", "-f", "--file", "--include", "--exclude",
+                "--exclude-dir", "-d", "--max-depth", "--color", "--colour", "-M", "--max-columns", "-j", "--threads"}
+
+
+def _unwrap(command: str) -> list:
+    """The scripts a command runs: Codex reports `pwsh.exe -Command '<script>'` (or bash -lc) in shell quoting,
+    which splits the script's own quotes apart. Each argument that is a script comes back on its own."""
+    import shlex
+    try:
+        args = shlex.split(command, posix=True)
+    except ValueError:
+        return [command]
+    return [a for a in args if " " in a.strip()] or [command]
+
+
+def _blank_patterns(script: str) -> str:
+    """The script with its search patterns blanked out, so only names it could open are left."""
+    def blank(span):
+        return " " * len(span)
+
+    # a quoted (or single) argument right after a pattern operator: -match, -notmatch, -like, -pattern, -e ...
+    # A positive filter (-match, -like) chooses files, so it only counts when nothing after it reads what it
+    # chose: `Where-Object Name -match '\.env' | Get-Content` opens .env. -notmatch/-notlike leave files out.
+    out = list(script)
+    for m in _PATTERN_OPERATOR.finditer(script):
+        positive = re.fullmatch(r"(?i)-[ci]?(match|like)", m.group(0))
+        if positive and _READS_CONTENT.search(script, m.end()):
+            continue
+        rest = script[m.end():]
+        stripped = len(rest) - len(rest.lstrip())
+        q = _QUOTED.match(rest.lstrip()) or re.match(r"\S+", rest.lstrip())
+        if q:
+            start = m.end() + stripped
+            out[start:start + len(q.group(0))] = blank(q.group(0))
+    script = "".join(out)
+
+    # a search tool's first argument that isn't an option: the pattern (rg PATTERN [PATH ...]). Commands are
+    # split at ; | & outside quotes only: a pattern like 'a|\.env' has a | of its own.
+    tokens = list(re.finditer(r"""(?:'[^']*'|"[^"]*"|[^\s'";|&])+|[;|&]+""", script))
+    segments, current = [], []
+    for t in tokens:
+        if re.fullmatch(r"[;|&]+", t.group(0)):
+            segments.append(current)
+            current = []
+        else:
+            current.append(t)
+    segments.append(current)
+    for n, words in enumerate(segments):
+        if words and any(_READS_CONTENT.search(" ".join(w.group(0) for w in later)) for later in segments[n + 1:]):
+            continue  # `rg --files | rg '\.env$' | xargs cat`: what it finds is then read
+        raw = [w.group(0).strip("'\"") for w in words]
+        tools = [r.lower().replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".exe") for r in raw]
+        tool = next((i for i, n in enumerate(tools) if n in _SEARCH_TOOLS or (n == "grep" and i and tools[i - 1] == "git")),
+                    None)
+        if tool is None or "-e" in raw or "--regexp" in raw:
+            continue
+        slash_options = tools[tool] == "findstr"  # findstr /s /i "text" files
+        i = tool + 1
+        while i < len(words):
+            w = raw[i]
+            if w in _TAKES_VALUE:
+                i += 2
+                continue
+            if (w.startswith("-") and w != "-") or (slash_options and w.startswith("/")):
+                i += 1
+                continue
+            start, end = words[i].span()
+            script = script[:start] + blank(words[i].group(0)) + script[end:]
+            break
+    return script
+
+
+def _looks_like_pattern(token: str) -> bool:
+    """A regular expression rather than a file name: ^.env$, (?i).env, [^.]env. Backslash escapes don't count:
+    Windows paths are full of them (certs\\server.pem), so they are never a reason to let a name through."""
+    return bool(re.search(r"\(\?|\[\^|^\^.*\$$", token))
+
+
+def _names_secret(token: str) -> bool:
+    """True if the token is a secret file's name, or a wildcard or anchored pattern that matches one
+    (.env*, *.pem, \\.env$)."""
+    if is_secret_path(token):
+        return True
+    if not re.search(r"[*?$^]", token):
+        return False
+    plain = re.sub(r"^\^|\$$|^\\+(?=\.)", "", token)  # ^.env$ -> .env, \.env -> .env
+    if is_secret_path(plain):
+        return True
+    import fnmatch
+    name = re.split(r"[\\/]+", plain)[-1]
+    samples = (".env", ".env.local", "id_rsa", "credentials.json", "secrets.json", "x.pem", "x.key", "x.p12",
+               "x.pfx", "x.db", "x.sqlite", ".netrc", ".npmrc", ".git-credentials")
+    return bool(name) and any(fnmatch.fnmatch(s, name) for s in samples) and name not in ("*", "*.*", "?*")
+
+
 def secret_in_command(command) -> Optional[str]:
-    """The first secret file a command names (and isn't leaving out), or None."""
+    """The first secret file a command names (and isn't leaving out or searching for), or None."""
     if isinstance(command, (list, tuple)):
         command = " ".join(str(c) for c in command)
+    for script in _unwrap(str(command or "")):
+        found = _secret_in_script(_blank_patterns(script))
+        if found:
+            return found
+    return None
+
+
+def _secret_in_script(script: str) -> Optional[str]:
     previous = ""
-    for token in re.split(r"""[\s'"`|;&<>(),={}]+""", str(command or "")):
+    for token in re.split(r"""[\s'"`|;&<>(),={}]+""", script):
         token = token.strip().rstrip(":")
         if not token:
             continue
-        excluded = previous.lower() in _EXCLUDING or token.startswith(("!", ":!", ":(exclude)", "^"))
-        if not excluded and not token.startswith("-") and is_secret_path(token):
+        excluded = previous.lower() in _EXCLUDING or token.startswith(("!", ":!", ":(exclude)"))
+        if not excluded and not token.startswith("-") and not _looks_like_pattern(token) and _names_secret(token):
             return token
         previous = token
     return None
