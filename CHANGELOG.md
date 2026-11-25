@@ -2,6 +2,14 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **`/pr fix`**: Codex fixes a pull request's failing checks and open review comments, like the official
+  Codex app's pull request review. The app reads them with `gh`: the failing checks with the end of each
+  failed GitHub Actions log, unresolved review threads, and reviews that ask for changes. It shows what
+  it found and asks, Codex makes the fixes and runs the checks, and then `/commit` and a push update the
+  pull request, each after a yes. Logs and comments are given to Codex as data to judge, never as orders.
+
 ## 1.12.0 (2026-11-25)
 
 - **Memory between conversations** (`/memory`), like official Codex's memories. Codex App now keeps short

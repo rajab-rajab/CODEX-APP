@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from codex_app import __version__, approvals, browser, costs, engine, export, gitflow, outside, prefs, profiles, \
-    memory, protect, schedule, sessions, undo, updater
+    memory, prfix, protect, schedule, sessions, undo, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
 from codex_app.modes import INIT_TASK, MODES, make_reviewer, make_writer, project_instructions, review_task, \
@@ -54,6 +54,8 @@ HELP = """Commands (most are the same as official Codex's):
                           (official Codex CLI too); a number carries on with one
   /commit [message]       commit the changes; Codex writes the message unless you give one
   /pr [title]             push to a branch and open a pull request (needs GitHub's gh)
+  /pr fix [number]        Codex fixes the pull request's failing checks and open review comments,
+                          then commit and push (each after a yes)
   /save [show|clear]      remember this project's mode, power, profile, permission and models
   /export [file]          save this conversation (messages, commands, diffs) as a Markdown file
   /prices [model in cached out | model off]  set what a model costs ($ per million tokens)
@@ -998,6 +1000,88 @@ class App:
             return
         print(f"{GREEN}* Pull request opened: {url}{RESET}")
 
+    def pr_fix(self, arg: str = "") -> None:
+        """/pr fix [number]: Codex fixes the pull request's failing checks and open review comments (see
+        codex_app/prfix.py); then commit and push, each after a yes."""
+        if not gitflow.is_repo(self.root) or not gitflow.has_remote(self.root):
+            print("This project isn't a git repository with an 'origin' remote on GitHub.")
+            return
+        if not gitflow.gh_available():
+            print("/pr fix needs GitHub's gh tool: install it from https://cli.github.com and run 'gh auth login'.")
+            return
+        number = arg.strip().lstrip("#")
+        if number and not number.isdigit():
+            print("/pr fix [number]: the pull request's number, or nothing for this branch's pull request.")
+            return
+        print(f"{GREY}Reading the pull request's checks and reviews on GitHub...{RESET}")
+        try:
+            fb = prfix.read(self.root, int(number) if number else None)
+            branch = gitflow.current_branch(self.root)
+        except gitflow.GitError as e:
+            print(f"{RED}Couldn't read the pull request: {e}{RESET}")
+            return
+        if fb.state != "OPEN":
+            print(f"Pull request #{fb.number} is {fb.state.lower()}, so there is nothing to fix.")
+            return
+        if fb.cross_repo:
+            print(f"Pull request #{fb.number} comes from a fork; /pr fix only works on branches in this repository.")
+            return
+        if branch != fb.branch:
+            print(f"Pull request #{fb.number} is on branch {fb.branch}, but {branch} is checked out. "
+                  f"Switch first: git switch {fb.branch}")
+            return
+        try:
+            gitflow.git(self.root, "fetch", "-q", "origin", fb.branch, check=False)
+            behind = gitflow.git(self.root, "rev-list", "--count", f"HEAD..origin/{fb.branch}", check=False).strip()
+        except gitflow.GitError:
+            behind = ""
+        if behind.isdigit() and int(behind):
+            print(f"{YELLOW}GitHub has {behind} newer commit(s) on {fb.branch}. Pull them first (git pull), so the "
+                  f"fix starts from the latest code.{RESET}")
+            return
+        if fb.conflicts:
+            print(f"{YELLOW}It also has merge conflicts with {fb.base}; /pr fix doesn't resolve those "
+                  f"(git merge origin/{fb.base}, then fix the files).{RESET}")
+        if not fb.anything_to_fix:
+            running = f" Still running: {', '.join(fb.pending)}." if fb.pending else ""
+            print(f"Pull request #{fb.number} has no failing checks and no open review comments.{running}")
+            return
+        print(f"Pull request #{fb.number} ({fb.url}):")
+        for line in prfix.summary(fb):
+            print(f"  - {line}")
+        if fb.pending:
+            print(f"{GREY}  (still running, not included: {', '.join(fb.pending)}){RESET}")
+        print(f"{GREY}Logs and comments come from GitHub, so Codex gets them as data to judge, not as orders.{RESET}")
+        if self.ask("Have Codex fix these? (y/n) ").strip().lower() not in ("y", "yes"):
+            print("Nothing was changed.")
+            return
+        self.run_task(prfix.task(fb))
+        if not self.result()["ok"]:
+            print(f"{YELLOW}Codex didn't finish the fixes (it was stopped, or failed), so nothing is committed or "
+                  f"pushed. Look at the changes with /diff; /commit and git push update pull request #{fb.number}, "
+                  f"or /undo puts the files back.{RESET}")
+            return
+        try:
+            paths, _ = gitflow.split_secrets(gitflow.changed_files(self.root))
+        except gitflow.GitError:
+            paths = []
+        if not paths:
+            print("Codex changed no files, so there is nothing to commit or push.")
+            return
+        if not self.commit():
+            print(f"Not committed or pushed. /commit and then git push update pull request #{fb.number}.")
+            return
+        if self.ask(f"Push to {fb.branch} on GitHub, updating pull request #{fb.number}? (y/n) ").strip().lower() \
+                not in ("y", "yes"):
+            print("Committed here, not pushed.")
+            return
+        try:
+            gitflow.push(self.root, fb.branch)
+        except gitflow.GitError as e:
+            print(f"{RED}The push failed: {e}{RESET}")
+            return
+        print(f"{GREEN}* Pushed. The checks run again on {fb.url}{RESET}")
+
     def save_prefs(self, arg: str = "") -> None:
         """/save: remember this project's settings; /save show; /save clear."""
         if arg == "clear":
@@ -1509,7 +1593,12 @@ class App:
         elif name == "/commit":
             self.commit(arg)
         elif name == "/pr":
-            self.pull_request(arg)
+            words = arg.split()
+            if words and words[0].lower() == "fix" and (len(words) == 1 or (len(words) == 2 and
+                                                                            words[1].lstrip("#").isdigit())):
+                self.pr_fix(words[1] if len(words) == 2 else "")  # "/pr fix the login bug" is still a title
+            else:
+                self.pull_request(arg)
         elif name == "/save":
             self.save_prefs(arg)
         elif name == "/skills":

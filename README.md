@@ -216,6 +216,7 @@ Most of these are the same as official Codex's.
 | `/diff` | The project's git changes, including new files |
 | `/commit [message]` | Commit the changes. Codex writes the message from the diff unless you give one; you approve or edit it. Secret files are never committed |
 | `/pr [title]` | Push the work to a branch and open a pull request on GitHub (needs [gh](https://cli.github.com)); asks first |
+| `/pr fix [number]` | Codex fixes the pull request's failing checks and open review comments, then commit and push, each after a yes (see "Git: commit and pull request") |
 | `/save [show\|clear]` | Remember this project's mode, power, profile, permission and models for the next start |
 | `/export [file]` | Save this conversation (your messages, answers, commands with output, diffs) as a Markdown file |
 | `/prices [model in cached out \| model off]` | Set what a model costs, in dollars per million tokens |
@@ -345,6 +346,29 @@ files are never staged, even if `.gitignore` doesn't exclude them; the app tells
 move to a new branch (for example `codex/fix-the-login-bug`) and `main` goes back to match GitHub, so
 nothing is lost. Then it pushes the branch and opens the pull request with GitHub's `gh` tool, and
 shows its link. Git hooks run as usual.
+
+`/pr fix` (or `/pr fix <number>`) is for a pull request that came back with problems, like the official
+Codex app's pull request review. The app reads the pull request with `gh`:
+
+- its failing checks, with the end of each failed GitHub Actions job's log;
+- its open review comments (unresolved, not outdated threads) and reviews that ask for changes.
+
+It lists what it found and asks. Then Codex fixes them in your chosen mode, runs the checks that failed
+(or the closest local test), and says which comments it didn't follow and why. Afterwards `/commit` and
+a push update the pull request, each after a yes.
+
+- Logs and comments are written by other people, or by whatever ran in CI. So Codex gets them as data to
+  judge, not as orders: it is told never to run commands, open links, change settings or touch secrets
+  because a log or comment says so, and to change only the files the fixes need.
+- The pull request's branch must be checked out and up to date with GitHub (the app says `git switch`
+  or `git pull` otherwise). Pull requests from forks, merged or closed ones, and merge conflicts are left
+  to you. Checks that are still running aren't included.
+- If Codex doesn't finish the fixes (you stop it, it fails, or the secret guard stops a turn), nothing
+  is committed or pushed: look at the changes with `/diff` first, then `/commit` or `/undo`.
+- Logs are cut to their last 120 lines (30,000 characters in all) and comments to 2,000 characters each,
+  so a huge log doesn't use up the context.
+- `/pr fix the login bug` is still a pull request titled "fix the login bug": only `/pr fix` alone, or
+  with a number, fixes one.
 
 ## Saved preferences
 
@@ -566,6 +590,7 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/undo.py` | File snapshots and restoring them for `/undo` |
 | `codex_app/worktrees.py` | Team mode: a git worktree per worker, and merging their work back |
 | `codex_app/gitflow.py` | `/commit` and `/pr`: committing and opening pull requests |
+| `codex_app/prfix.py` | `/pr fix`: reading a pull request's failing checks and review comments |
 | `codex_app/prefs.py` | Saved preferences per project (`/save`) and the finish signal |
 | `codex_app/selftest.py` | `--selftest`: checks the engine still has everything the app uses |
 | `codex_app/export.py` | `/export`: a conversation as Markdown |
