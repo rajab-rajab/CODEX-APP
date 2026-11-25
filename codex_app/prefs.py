@@ -16,7 +16,7 @@ from . import config
 
 KEYS = ("mode", "power", "profile", "permission", "approval", "single_model", "single_effort",
         "planner_model", "planner_effort", "worker_model", "worker_effort", "team_size", "web_search", "notify",
-        "browser", "memory")
+        "browser", "memory", "browser_check", "check_url")
 
 
 def _file() -> Path:

@@ -40,7 +40,9 @@ def log_file() -> Path:
 def server_config(confirm_dir: Path, channel: str = "msedge", headless: bool = False, sites: str = "",
                   allow_private: bool = False) -> dict:
     """The MCP server entry that gives one conversation the browser (passed in the thread's config)."""
-    args = [str(SCRIPT), "--channel", channel, "--confirm-dir", str(confirm_dir), "--log-file", str(log_file())]
+    # confirm_dir None: nobody to ask, so the browser refuses every click that would need a yes.
+    args = [str(SCRIPT), "--channel", channel, *(["--confirm-dir", str(confirm_dir)] if confirm_dir else []),
+            "--log-file", str(log_file())]
     args += (["--headless"] if headless else []) + (["--allow-sites", sites] if sites else [])
     args += ["--allow-private"] if allow_private else []
     return {"command": sys.executable, "args": args, "startup_timeout_sec": 60,

@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 from codex_app import __version__, approvals, browser, costs, engine, export, gitflow, outside, prefs, profiles, \
@@ -76,6 +77,8 @@ HELP = """Commands (most are the same as official Codex's):
   /browser [on|off|log]   Codex App's private browser: Codex can visit websites and act on them
                           when you ask (risky clicks wait for your yes; starts a new conversation);
                           log shows its recent actions, refused ones marked
+  /browser check [on|off|<url>]  dual/team mode: changed web pages are opened in a headless
+                          browser before the planner's verdict (the project folder, or your dev server)
   /compact                summarise the conversation so far, to free up context
   /init                   write an AGENTS.md that describes this project
   /models                 list the models Codex can use
@@ -835,6 +838,8 @@ class App:
             print("The browser is off, in a new conversation (the old one is saved; /resume brings it back).")
         elif arg == "log":
             self.browser_log()
+        elif arg == "check" or arg.startswith("check "):
+            self.browser_check_command(arg[len("check"):].strip())
         else:
             s = self.settings
             print(f"The browser is {'on' if s.browser else 'off'}. /browser on or /browser off "
@@ -843,6 +848,32 @@ class App:
                   f"{' (allowed: CODEX_APP_BROWSER_PRIVATE)' if s.browser_private else ''}, automated runs and "
                   f"CAPTCHAs are blocked{'; only these sites open: ' + s.browser_sites if s.browser_sites else ''}. "
                   f"Every action is logged (/browser log).")
+
+    def browser_check_command(self, arg: str) -> None:
+        """/browser check [on|off|<url>]: whether dual and team mode look at changed web pages in the browser
+        before the verdict, and where (see codex_app/webcheck.py)."""
+        s = self.settings
+        if arg in ("on", "off"):
+            s.browser_check = arg == "on"
+        elif arg in ("folder", "auto"):
+            s.check_url = ""
+        elif arg:
+            url = arg if "://" in arg else f"http://{arg}"
+            host = (urllib.parse.urlparse(url).hostname or "").lower()
+            if urllib.parse.urlparse(url).scheme not in ("http", "https") or host not in ("localhost", "127.0.0.1"):
+                print(f"{YELLOW}The browser check only opens this computer: give your dev server's address, for "
+                      f"example /browser check http://localhost:3000{RESET}")
+                return
+            s.check_url, s.browser_check = url, True
+        where = (f"your dev server at {s.check_url}" if s.check_url else
+                 "the project folder, served by the app on 127.0.0.1 while it checks")
+        print(f"Browser check is {'on' if s.browser_check else 'off'}"
+              + (f": in dual and team mode, changed web pages are opened in a headless browser ({where}) before "
+                 f"the planner's verdict." if s.browser_check else ".")
+              + f"\n{GREY}/browser check on|off, /browser check <url> for a dev server you run, /browser check folder "
+                f"to serve the project folder again.{RESET}")
+        if s.browser_check and self.mode.name == "single":
+            print(f"{GREY}It runs in dual and team mode (/mode dual), where a planner gives the verdict.{RESET}")
 
     def browser_log(self, count: int = 20) -> None:
         """/browser log: the last browser actions, refused ones marked."""
@@ -1095,7 +1126,8 @@ class App:
         s, start = self.settings, self.start_settings
         values = {"mode": self.mode.name, "power": s.power, "profile": s.profile, "permission": s.permission,
                   "approval": s.approval, "team_size": s.team_size, "web_search": s.web_search, "notify": s.notify,
-                  "browser": s.browser, "memory": s.memory,
+                  "browser": s.browser, "memory": s.memory, "browser_check": s.browser_check,
+                  "check_url": s.check_url,
                   # the models without the power preset on top, so loading applies the power level again
                   **{k: getattr(start if s.power != "normal" else s, k) for k in
                      ("single_model", "single_effort", "planner_model", "planner_effort", "worker_model",
