@@ -79,6 +79,7 @@ class Settings:
     team_size: int = 3             # team mode: how many workers may work at the same time
     team_worktrees: bool = True    # team mode: each worker in its own git worktree (see worktrees.py)
     memory: bool = True            # notes kept between conversations (see memory.py)
+    fix_permissions: bool = True   # Windows: give back files Codex's sandbox made unreadable (see perms.py)
     memory_notes: str = ""         # set by the app: what main agents are told about memory (not a setting to save)
     structured_verdicts: bool = True  # dual/team: the planner's verdict as structured output, not text
     secret_guard: bool = True      # stop a turn the moment Codex starts to read or change a secret file
@@ -116,6 +117,7 @@ class Settings:
         s.team_size = _env_int("CODEX_APP_TEAM_SIZE", s.team_size)
         s.team_worktrees = _env_bool("CODEX_APP_TEAM_WORKTREES", s.team_worktrees)
         s.memory = _env_bool("CODEX_APP_MEMORY", s.memory)
+        s.fix_permissions = _env_bool("CODEX_APP_FIX_PERMISSIONS", s.fix_permissions)
         s.secret_guard = _env_bool("CODEX_APP_SECRET_GUARD", s.secret_guard)
         s.notify = _env_bool("CODEX_APP_NOTIFY", s.notify)
         s.notify_after = _env_int("CODEX_APP_NOTIFY_AFTER", s.notify_after)

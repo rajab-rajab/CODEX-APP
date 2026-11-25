@@ -393,6 +393,14 @@ app reads what every subagent did, and if one read or changed a secret file it s
 read may have reached OpenAI, so change that secret if it matters. In a live test, a subagent asked to
 show every file's contents left `.env` alone by itself.
 
+The guard looks at what a command does with a name, not just whether the name appears. **Searching for**
+a secret file's name, or **filtering it out**, is fine: `rg '\.env\b' src`, `Select-String -Pattern '.env'`,
+`Where-Object Name -notmatch '^\.env'`. Careful models write exactly these commands, because they are told
+to keep away from secret files, and they used to set the guard off. **Opening** one is stopped, however it is
+written: `Get-Content .env`, `rg KEY .env`, `Select-String -Path .env`, a wildcard (`cat .env*`,
+`Get-Content *.pem`), or a filter whose matches are then read (`... -match '\.env' | Get-Content`,
+`rg --files | rg '\.env$' | xargs cat`).
+
 ## Reliability
 
 - **Engine-update safety check.** `py main.py --selftest` checks, in a few seconds and without a model
@@ -458,6 +466,23 @@ size, web search, finish signal and memory on/off in `C:\Users\<you>\.codex-app\
 that project uses them. Command-line options still win, and saved preferences win over environment
 variables. `/save show` lists them and `/save clear` forgets them. A saved `full` permission still asks
 for `yes` at every start.
+
+## Files Codex's sandbox locks (Windows)
+
+On Windows, Codex runs commands as a separate sandbox account. A file it edits with its own edit tool keeps
+the folder's permissions. But a file that one of its commands writes or replaces can belong to the sandbox
+account alone: PowerShell `Set-Content`, Python, or pytest's cache folders. Then you can't open the file,
+git can't read it (so `/undo` and the list of changed files stop working), and team mode can't merge it.
+In a benchmark run, every mode left such files: rewritten source files, test files Codex wrote, and
+pytest cache folders.
+
+So after every turn, and in each team worker's worktree before it is merged, Codex App looks for files and
+folders in the project that your account can't open. This takes about a tenth of a second. If it finds
+any, it asks Codex's own sandbox to give your account full access again, using `icacls /grant` (the
+sandbox account owns those files, so it may). This takes a few seconds. Then it checks again, and tells
+you what it fixed, or which files are still locked and the command to unlock them as administrator.
+`CODEX_APP_FIX_PERMISSIONS=no` turns this off. Other systems aren't affected, because there the sandbox
+runs as you.
 
 ## Undo
 
@@ -527,6 +552,7 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_PROFILE` | `auto` | Task profile: `auto`, `coding`, `chat`, `maths` |
 | `CODEX_APP_POWER` | `normal` | Power level: `normal`, `high`, `max` |
 | `CODEX_APP_TEAM_SIZE` | `3` | Team mode: workers at the same time (1 to 8) |
+| `CODEX_APP_FIX_PERMISSIONS` | `yes` | Windows: give your account access back to files Codex's sandbox made unreadable (see "Files Codex's sandbox locks") |
 | `CODEX_APP_MEMORY` | `yes` | Notes kept between conversations (see "Memory"); `no` turns them off |
 | `CODEX_APP_TEAM_WORKTREES` | `yes` | Team mode: each worker in its own git worktree (`no`: all share the project folder) |
 | `CODEX_APP_SECRET_GUARD` | `yes` | Stop a turn the moment Codex starts to read or change a secret file |
@@ -680,6 +706,7 @@ To allow a newer engine, test it, then widen the range in `requirements.txt` in 
 | `codex_app/selftest.py` | `--selftest`: checks the engine still has everything the app uses |
 | `codex_app/export.py` | `/export`: a conversation as Markdown |
 | `codex_app/costs.py` | `/prices` and `/stats`: model prices and the usage log |
+| `codex_app/perms.py` | Finding files Codex's Windows sandbox made unreadable, and giving them back |
 | `codex_app/memory.py` | `/memory`: notes kept between conversations |
 | `codex_app/schedule.py` | `/schedule`: saved schedules, Task Scheduler and cron entries, run results |
 | `.github/workflows/tests.yml` | The tests on GitHub, on Windows and Linux |
@@ -733,9 +760,12 @@ py bench/run.py
 py bench/run.py --modes single,dual --repeat 3 --tasks median-bug,two-fixes
 ```
 
-- **Six tasks** in `bench/tasks/`: fix a bug, add a function from a spec, rename across files, make
-  failing tests pass without changing them, write a parser with error handling, and two independent
-  fixes in two files (which suits team mode).
+- **Seven tasks** in `bench/tasks/`: fix a bug, add a function from a spec, rename across files, make
+  failing tests pass without changing them, write a parser with error handling, two independent
+  fixes in two files (which suits team mode), and `ledger`. That last one is a complex task: seven
+  features and fixes across four files (exact decimal money, CSV quoting, currency conversion, split
+  payments, errors that name the line, a new CLI). Every rule its hidden tests check is stated in its
+  prompt.
 - **How a run is judged.** Each task starts as a fresh git project. Codex App works on it exactly as you
   would use it (`--json`, permission `workspace`, approval `deny_all`). Only then are the task's hidden
   tests copied in, so Codex never sees them, and a run passes only if all of them pass.

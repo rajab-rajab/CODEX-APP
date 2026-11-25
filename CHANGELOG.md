@@ -2,6 +2,20 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Files Codex's Windows sandbox locks are given back.** A file that one of Codex's commands writes or
+  replaces (not its edit tool) can belong to the sandbox account alone. Then you can't open it, git can't
+  read it, and `/undo`, the changed-files list and team merges stop working. After every turn, and in team
+  worktrees before merging, the app finds such files and has Codex's sandbox give your account access back.
+  It says what it fixed, or how to fix what it couldn't. `CODEX_APP_FIX_PERMISSIONS=no` turns it off.
+- **The secret guard no longer stops searches for secret names.** Commands that search for a secret
+  file's name, or filter it out (`rg '\.env\b'`, `-notmatch '^\.env'`), stopped Codex before. Careful models
+  write these because they are told to avoid secret files. Opening a secret file is still stopped, and now
+  also when it is done through a wildcard (`cat .env*`) or a find-then-read pipeline.
+- Benchmark: a new complex task, `ledger`, and two task prompts that now state everything their hidden
+  tests check (`duration`, `paginate`).
+
 ## 1.17.0 (2026-11-26)
 
 - **Plugins** (`/plugins`): Codex's plugin marketplace from Codex App, like the official apps' plugin

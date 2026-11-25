@@ -1,0 +1,3 @@
+date,payer,payee,amount,currency,description
+2026-01-02,alice,bob,12.50,EUR,lunch
+2026-01-03,bob,"split:alice,bob,carol",30.00,USD,"taxi, airport"

@@ -20,7 +20,7 @@ from pathlib import Path
 import copy
 from contextlib import nullcontext
 
-from . import approvals, browser as browser_tool, profiles, protect, webcheck, worktrees
+from . import approvals, browser as browser_tool, perms, profiles, protect, webcheck, worktrees
 from .agent import CodexAgent, Usage
 from .config import Settings
 
@@ -706,6 +706,18 @@ class TeamMode(DualMode):
                      f"into {self.root} when they are done.")
         return made
 
+    def _fix_permissions(self, folder) -> None:
+        """Windows: files the sandbox wrote in a worktree can be unreadable to git, which then can't merge
+        them; give them back first (see perms.py)."""
+        if not self.settings.fix_permissions or not perms.applies():
+            return
+        try:
+            fixed, left = perms.check_and_repair(folder)
+        except Exception:
+            return
+        if left:
+            self._notice(f"Some files a worker wrote can't be read, so they may not be merged: {', '.join(left[:5])}")
+
     def _close_worktrees(self, trees: list) -> None:
         for b, tree in enumerate(trees):
             self._worker(b).set_cwd(self.root)  # back to the project folder for fixes and later messages
@@ -732,6 +744,7 @@ class TeamMode(DualMode):
                     report = worker.send(with_attachments(self.sdk, text, attachments if n == 0 else ()))
                     diff = worker.last_diff
                     if tree:  # git's exact diff for this part, from the worker's own copy
+                        self._fix_permissions(tree.path)  # git must be able to read what the worker wrote
                         now = tree.tree()
                         diff, before = (tree.diff(now, before) or diff), (now or before)
                     results[i] = (worker.name, report, diff)
@@ -739,6 +752,7 @@ class TeamMode(DualMode):
                     errors.append(f"{worker.name}, part {i + 1}: {e}")
                     results[i] = (worker.name, f"[failed: {e}]", "")
             if tree:
+                self._fix_permissions(tree.path)
                 finals[b] = tree.tree()
 
         threads = [threading.Thread(target=work, args=(b, bucket), daemon=True) for b, bucket in enumerate(buckets)]
