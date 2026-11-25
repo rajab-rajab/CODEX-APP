@@ -1,0 +1,2 @@
+{"title": "Two independent fixes", "kind": "two changes in two files (suits team mode)",
+ "prompt": "Two independent changes: (1) inventory.total() must multiply each item's price by its quantity; it currently adds up the prices only. (2) cli.py's main(argv) should accept a --json option and then print the report as one JSON object, {\"items\": <number of items>, \"total\": <total>}, instead of the text line. Without --json it prints the text line as now."}

@@ -1,0 +1,2 @@
+{"title": "Add a function", "kind": "new feature from a spec",
+ "prompt": "Add slugify(text) to text_utils.py. It returns a lowercase version for use in web addresses: accents are removed (é becomes e), every run of characters that aren't letters or digits becomes a single hyphen, and there are no hyphens at the start or end. For example slugify('  Héllo, World!  ') == 'hello-world'. Keep the existing functions as they are."}

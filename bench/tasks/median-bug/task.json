@@ -1,0 +1,2 @@
+{"title": "Fix a bug", "kind": "bug fix, one file",
+ "prompt": "median() in stats.py gives the wrong answer for lists with an even number of items. Fix it. An empty list should raise ValueError, and median() must not change the list it is given."}

@@ -1,0 +1,2 @@
+{"title": "Make the tests pass", "kind": "failing tests, don't change them",
+ "prompt": "The tests in the tests folder fail. Fix the code so they pass, without changing the tests. Pages are numbered from 1; a page or page size below 1 is an error (ValueError)."}
