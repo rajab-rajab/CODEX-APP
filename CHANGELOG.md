@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.18.0 (2026-11-26)
 
 - **Files Codex's Windows sandbox locks are given back.** A file that one of Codex's commands writes or
   replaces (not its edit tool) can belong to the sandbox account alone. Then you can't open it, git can't
