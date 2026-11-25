@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.15.0 (2026-11-25)
 
 - **Benchmark** (`py bench/run.py`): it measures how often single, dual and team mode get fixed tasks right,
   and what that costs. Six tasks each start as a fresh project that Codex App works on as usual. Only
