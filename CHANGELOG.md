@@ -2,6 +2,11 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- Benchmark: results are saved after every run, so a stopped benchmark keeps the runs it finished. Its report
+  says "Partial: N of M planned runs". Before, a long run stopped part-way lost its whole report.
+
 ## 1.18.0 (2026-11-26)
 
 - **Files Codex's Windows sandbox locks are given back.** A file that one of Codex's commands writes or
