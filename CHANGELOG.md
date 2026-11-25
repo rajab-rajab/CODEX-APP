@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.14.0 (2026-11-25)
 
 - **Browser check** in dual and team mode, like the official Codex app's in-app browser verification. When
   the worker changes web files, a separate read-only checker opens the changed pages in a headless
