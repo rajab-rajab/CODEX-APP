@@ -116,7 +116,76 @@ def _describe_started(item) -> Optional[str]:
         return f"web search: {_short(getattr(item, 'query', ''))}"
     if kind == "mcpToolCall":
         return f"tool: {getattr(item, 'tool', '') or getattr(item, 'name', '')}"
+    if kind == "collabAgentToolCall":
+        return _describe_subagent_call(item)
     return None
+
+
+# Subagents: helper agents Codex starts by itself for parts of a task (official Codex's subagents). The
+# engine reports what Codex does with them as collabAgentToolCall items, and their progress as
+# subAgentActivity items; each subagent works in a conversation of its own.
+_SUBAGENT_VERBS = {"spawnAgent": "start", "sendInput": "message", "sendMessage": "message",
+                   "followupTask": "follow-up task", "resumeAgent": "resume", "wait": "wait for",
+                   "closeAgent": "close", "interruptAgent": "stop"}
+
+
+def _short_id(thread_id) -> str:
+    return str(thread_id or "?")[-6:]
+
+
+def _describe_subagent_call(item) -> Optional[str]:
+    tool = str(_value(getattr(item, "tool", "")))
+    verb = _SUBAGENT_VERBS.get(tool)
+    if verb is None:  # listAgents and the like: nothing worth a line
+        return None
+    who = [_short_id(t) for t in getattr(item, "receiver_thread_ids", None) or []]
+    if tool == "spawnAgent":
+        model = getattr(item, "model", None)
+        prompt = getattr(item, "prompt", None)
+        return "subagent: start" + (f" ({model})" if model else "") + (f": {_short(prompt, 120)}" if prompt else "")
+    target = f" {', '.join(who)}" if who else (" subagents" if tool == "wait" else "")
+    return f"subagent: {verb}{target}"
+
+
+def subagent_name(item) -> str:
+    """'shapes' for the engine's agent path '/root/shapes', else the end of its conversation ID."""
+    path = str(getattr(item, "agent_path", None) or "").strip("/")
+    if path.startswith("root/"):
+        path = path[len("root/"):]
+    return path or _short_id(getattr(item, "agent_thread_id", None))
+
+
+def describe_subagent_result(item) -> Optional[tuple]:
+    """(kind, text) for a finished subagent call or activity, or None if there is nothing to say."""
+    kind = getattr(item, "type", "")
+    if kind == "subAgentActivity":
+        what = str(_value(getattr(item, "kind", "")))
+        if what == "started":
+            model = getattr(item, "model", None)
+            effort = _value(getattr(item, "reasoning_effort", None))
+            detail = ", ".join(str(x) for x in (model, effort) if x)
+            return "tool", f"subagent {subagent_name(item)}: started" + (f" ({detail})" if detail else "")
+        if what in ("completed", "interrupted"):
+            return ("tool_result" if what == "completed" else "tool_error", f"subagent {subagent_name(item)} {what}")
+        return None
+    if kind != "collabAgentToolCall":
+        return None
+    status = str(_value(getattr(item, "status", "")))
+    tool = str(_value(getattr(item, "tool", "")))
+    if status in ("failed", "interrupted"):
+        return "tool_error", f"subagent {_SUBAGENT_VERBS.get(tool, tool)} {status}"
+    states = getattr(item, "agents_states", None) or {}
+    if tool != "wait" or not states:
+        return None
+    counts, trouble = {}, []
+    for thread_id, state in states.items():
+        st = str(_value(getattr(state, "status", "")))
+        counts[st] = counts.get(st, 0) + 1
+        if st in ("errored", "interrupted", "notFound"):
+            message = getattr(state, "message", None)
+            trouble.append(f"{_short_id(thread_id)} {st}" + (f": {_short(message, 80)}" if message else ""))
+    summary = ", ".join(f"{n} {st}" for st, n in sorted(counts.items()))
+    return ("tool_error" if trouble else "tool_result", f"subagents: {summary}" + (f" ({'; '.join(trouble)})" if trouble else ""))
 
 
 def format_plan(payload) -> str:
@@ -164,6 +233,10 @@ class CodexAgent:
         self.turns_log: list[tuple] = []
         self.retries = len(RETRY_DELAYS)    # automatic retries when OpenAI is busy (0 turns them off)
         self.sleep = time.sleep             # replaced in tests
+        self.subagents: set = set()         # conversation IDs of the subagents Codex started in this one
+        self._turn_subagents: set = set()   # ... in the turn that is running
+        self._seen_items: set = set()
+        self._last_wait = None
         self.last_status = None             # how the last turn ended: completed, failed, interrupted
         self.last_failure = None            # why it failed (a codexErrorInfo value), or None
 
@@ -390,6 +463,27 @@ class CodexAgent:
         self.interrupt()
         return True
 
+    def _check_subagents(self, thread_ids: list) -> None:
+        """Subagents run their commands in conversations of their own, which the secret guard can't watch
+        as they happen. So after the turn, look through what each one did, and say so loudly if one read or
+        changed a secret file: what it read may have reached OpenAI."""
+        if not self.secret_guard:
+            return
+        for thread_id in thread_ids:
+            try:
+                items = engine.thread_items(self.codex, thread_id)
+            except Exception:
+                self._emit("notice", f"Couldn't check what subagent {_short_id(thread_id)} did for secret files.")
+                continue
+            for item in items:
+                why = self.secret_guard(item)
+                if why:
+                    why = why.replace("Codex started", "a subagent")
+                    self.guard_hits.append(why)
+                    self._emit("tool_error", f"Secret guard: {why}. Subagents can't be stopped in time, so what it "
+                                             "read may have reached OpenAI. Change that secret if it matters.")
+                    break
+
     def _forget_turn(self, turn_id) -> None:
         if not (turn_id and self.thread_id):
             return
@@ -409,6 +503,7 @@ class CodexAgent:
         self.last_status = self.last_failure = None
         self.last_diff = ""
         guarded = False
+        self._turn_subagents, self._last_wait = set(), None
         for event in stream:
             method = getattr(event, "method", "")
             payload = getattr(event, "payload", None)
@@ -420,8 +515,15 @@ class CodexAgent:
             elif method == "item/started":
                 started = _root(getattr(payload, "item", None))
                 line = _describe_started(started)
+                if line and line.startswith("subagent: wait"):
+                    if line == self._last_wait:
+                        line = None  # Codex is still waiting: once is enough
+                    else:
+                        self._last_wait = line
                 if line:
                     self._emit("tool", line)
+                if getattr(started, "type", "") == "subAgentActivity":
+                    self._completed(started, answers, True)  # "started" may come only here
                 if not guarded and self._guard(started, turn_id):
                     guarded = True
             elif method == "item/completed":
@@ -441,6 +543,8 @@ class CodexAgent:
                 status = _value(getattr(t, "status", None))
                 error = getattr(t, "error", None)
 
+        if self._turn_subagents:
+            self._check_subagents(sorted(self._turn_subagents))
         if self.last_diff.strip():
             self._emit("diff", self.last_diff)
         if turn_id is not None or self.last_diff:
@@ -494,3 +598,21 @@ class CodexAgent:
             status = _value(getattr(item, "status", ""))
             self._emit("tool_result" if status in ("completed", "applied", "") else "tool_error",
                        f"edit {status or 'done'}")
+        elif kind in ("collabAgentToolCall", "subAgentActivity"):
+            new = []
+            if kind == "collabAgentToolCall" and str(_value(getattr(item, "tool", ""))) == "spawnAgent":
+                new = list(getattr(item, "receiver_thread_ids", None) or [])
+            elif kind == "subAgentActivity" and str(_value(getattr(item, "kind", ""))) == "started":
+                new = [getattr(item, "agent_thread_id", None)]
+            new = [t for t in new if t and t not in self.subagents]
+            self.subagents.update(new)
+            self._turn_subagents.update(new)
+            item_id = getattr(item, "id", None)
+            if item_id is not None and item_id in self._seen_items:
+                return  # the same activity reported again
+            if item_id is not None:
+                self._seen_items.add(item_id)
+            said = describe_subagent_result(item)
+            if said:
+                self._last_wait = None  # a later wait is news again
+                self._emit(*said)

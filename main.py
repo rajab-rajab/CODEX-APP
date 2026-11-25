@@ -53,6 +53,7 @@ HELP = """Commands (most are the same as official Codex's):
   /diff                   the project's git changes, including new files
   /history [number]       Codex's conversations for this project, from any Codex client
                           (official Codex CLI too); a number carries on with one
+  /history search <words> find conversations by title, first message, git branch or ID
   /commit [message]       commit the changes; Codex writes the message unless you give one
   /pr [title]             push to a branch and open a pull request (needs GitHub's gh)
   /pr fix [number]        Codex fixes the pull request's failing checks and open review comments,
@@ -1245,7 +1246,8 @@ class App:
                 "mode": self.mode.name, "project": str(self.root), "files_changed": files, "tokens": tokens,
                 "cost_usd": None if not cost or None in cost else round(sum(cost), 6),
                 "seconds": run.get("seconds"), "app_version": __version__,
-                "before_tree": point.get("tree")}
+                "before_tree": point.get("tree"),
+                "subagents": sum(len(a.subagents) for a in self.mode.agents())}
 
     def export(self, arg: str = "") -> None:
         """/export [file]: this conversation as a Markdown file."""
@@ -1453,27 +1455,48 @@ class App:
 
     def history(self, arg: str) -> None:
         """/history: Codex's own conversations for this project, from every Codex client (this app, the
-        official Codex CLI, VS Code ...). /history <number> carries on with one, in single mode."""
+        official Codex CLI, VS Code ...). /history search <words> (or /history <words>) finds them by
+        title, first message, git branch or ID. /history <number> carries on with one from the last
+        list, in single mode."""
+        arg = arg.strip()
+        if arg.isdigit():
+            found = getattr(self, "_history_list", None)
+            if found is None:  # nothing listed yet: number the newest, as /history shows them
+                found = self._history_threads("")
+                if found is None:
+                    return
+            if not 1 <= int(arg) <= len(found):
+                print("Use /history (or /history search <words>) to list them, then /history <number>.")
+                return
+            self._history_resume(found[int(arg) - 1])
+            return
+        search = arg[len("search"):].strip() if arg.lower().startswith("search") else arg
+        found = self._history_threads(search)
+        if found is None:
+            return
+        self._history_list = found
+        if not found:
+            print(f"No conversation for this project matches '{search}'." if search else
+                  "Codex has no saved conversations for this project folder yet.")
+            return
+        if search:
+            print(f"Conversations matching '{search}' (title, first message, branch or ID):")
+        for n, t in enumerate(found, 1):
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime((getattr(t, "updated_at", 0) or 0)))
+            branch = engine.thread_branch(t)
+            about = conversation_title(t)[:64]
+            print(f"  {n:2}. {when}  {made_by(t):10}  {about or t.id}" + (f"  {GREY}[{branch}]{RESET}" if branch else ""))
+        print("/history <number> carries on with one (in single mode); /history search <words> finds others.")
+
+    def _history_threads(self, search: str):
         try:
-            found = engine.threads(self.codex, str(self.root), limit=20)
+            found = engine.threads(self.codex, str(self.root), limit=20, search=search)
         except Exception as e:
             print(f"{RED}Could not list Codex's conversations: {e}{RESET}")
-            return
-        found = [t for t in found if not getattr(t, "ephemeral", False)]
-        if not arg:
-            if not found:
-                print("Codex has no saved conversations for this project folder yet.")
-            for n, t in enumerate(found, 1):
-                when = time.strftime("%Y-%m-%d %H:%M", time.localtime((getattr(t, "updated_at", 0) or 0)))
-                about = conversation_title(t)[:70]
-                print(f"  {n:2}. {when}  {made_by(t):10}  {about or t.id}")
-            if found:
-                print("/history <number> carries on with one (in single mode).")
-            return
-        if not arg.isdigit() or not 1 <= int(arg) <= len(found):
-            print("Use /history to list them, then /history <number>.")
-            return
-        chosen = found[int(arg) - 1]
+            return None
+        return [t for t in found if not getattr(t, "ephemeral", False)]
+
+    def _history_resume(self, chosen) -> None:
         self.save()
         self.new_conversation("single")
         self.mode.agent.thread_id = chosen.id  # resumed (with this app's settings) on the next message
