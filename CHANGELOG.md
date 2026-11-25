@@ -2,6 +2,15 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Plugins** (`/plugins`): Codex's plugin marketplace from Codex App, like the official apps' plugin
+  directory. It lists what is installed (and what is off in Codex App), searches what can be installed,
+  shows what a plugin adds, and installs or removes one after a yes. A plugin with only skills installs
+  directly. One with MCP servers, app integrations, hooks or scheduled tasks reaches outside the project,
+  so it is only installed with `--outside-tools`, and it is recorded so a normal start switches it off
+  again. Plugins live in Codex's own settings, shared with the official apps.
+
 ## 1.16.0 (2026-11-25)
 
 - **Subagents are shown**: when Codex starts helper agents of its own, you see each one start, Codex

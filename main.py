@@ -23,7 +23,7 @@ import urllib.parse
 from pathlib import Path
 
 from codex_app import __version__, approvals, browser, costs, engine, export, gitflow, outside, prefs, profiles, \
-    memory, prfix, protect, schedule, sessions, undo, updater
+    memory, plugins, prfix, protect, schedule, sessions, undo, updater
 from codex_app.config import APP_HOME, APPROVALS, EFFORT_LEVELS, PERMISSION_ALIASES, PERMISSIONS, Settings, \
     permission_name
 from codex_app.modes import INIT_TASK, MODES, make_reviewer, make_writer, project_instructions, review_task, \
@@ -74,6 +74,8 @@ HELP = """Commands (most are the same as official Codex's):
   /image <file>           attach an image to your next message
   /skills                 list the skills Codex can use; write $name in a message to use one
   /mcp                    list the MCP servers (external tools) Codex is set up with
+  /plugins [available [words] | show|install|remove <name>]  Codex's plugin marketplace:
+                          skills and tools; ones that reach outside the project need --outside-tools
   /secrets [on|off]       list secret files in the project; turn the secret guard on or off
   /browser [on|off|log]   Codex App's private browser: Codex can visit websites and act on them
                           when you ask (risky clicks wait for your yes; starts a new conversation);
@@ -796,6 +798,127 @@ class App:
                 print("    " + ", ".join(tools[:30]) + (" ..." if len(tools) > 30 else ""))
             if getattr(server, "tools_error", None):
                 print(f"{YELLOW}    {server.tools_error}{RESET}")
+
+    # --- /plugins: Codex's plugin marketplace (see codex_app/plugins.py) ------------------------------
+
+    def _off_here(self, p) -> bool:
+        """True if Codex App switches this plugin off (it reaches outside, and --outside-tools is off)."""
+        if self.settings.outside_tools:
+            return False
+        return bool(outside.OUTSIDE.search(p.name)) or p.id in outside.BUILT_IN_PLUGINS or p.id in plugins.recorded()
+
+    def plugins_command(self, arg: str) -> None:
+        """/plugins [available [words] | show <name> | install <name> | remove <name>]"""
+        sub, _, rest = arg.partition(" ")
+        sub, rest = sub.lower(), rest.strip()
+        try:
+            listed = plugins.catalogue(self.codex, str(self.root))
+        except Exception as e:
+            print(f"{RED}Could not read Codex's plugin marketplace: {e}{RESET}")
+            return
+        if sub in ("", "list", "installed"):
+            mine = [p for p in listed if p.installed]
+            if not mine:
+                print("No plugins are installed. /plugins available lists the marketplace.")
+            for p in sorted(mine, key=lambda p: p.id):
+                state = (f"{YELLOW}off in Codex App (reaches outside the project; --outside-tools){RESET}"
+                         if self._off_here(p) else "on" if p.enabled else "disabled")
+                print(f"  {CYAN}{p.name}{RESET} ({p.marketplace})  {state}" + (f"\n      {GREY}{p.summary[:90]}{RESET}"
+                                                                         if p.summary else ""))
+            print(f"{GREY}/plugins available [words] searches the marketplace; /plugins show <name> says what one "
+                  f"adds.{RESET}")
+        elif sub in ("available", "search", "find"):
+            found = [p for p in plugins.search(listed, rest) if not p.installed] if rest else [p for p in listed if not p.installed]
+            if not found:
+                print(f"No plugin to install matches '{rest}'." if rest else "Every plugin is installed already.")
+            for p in sorted(found, key=lambda p: (p.marketplace, p.name)):
+                note = "" if p.available else f" {YELLOW}(not available: {p.why_not or 'not allowed here'}){RESET}"
+                print(f"  {CYAN}{p.name}{RESET} ({p.marketplace}){note}  {GREY}{p.summary[:80]}{RESET}")
+            if found:
+                print(f"{GREY}/plugins show <name> says what one adds, before you install it.{RESET}")
+        elif sub in ("show", "install", "remove", "uninstall") and rest:
+            matches = plugins.find(listed, rest)
+            if not matches:
+                print(f"No plugin called '{rest}'. /plugins available lists them.")
+                return
+            if len(matches) > 1:
+                print(f"'{rest}' is in several marketplaces: " + ", ".join(p.id for p in matches) + ". Use the full name.")
+                return
+            p = matches[0]
+            try:
+                detail = plugins.read(self.codex, p)
+            except Exception as e:
+                print(f"{RED}Could not read the plugin: {e}{RESET}")
+                return
+            self._show_plugin(detail)
+            if sub == "install":
+                self._install_plugin(detail)
+            elif sub in ("remove", "uninstall"):
+                self._remove_plugin(detail)
+        else:
+            print("/plugins [available [words] | show <name> | install <name> | remove <name>]")
+
+    def _show_plugin(self, d) -> None:
+        p = d.plugin
+        print(f"{CYAN}{p.name}{RESET} ({p.id}){' - installed' if p.installed else ''}\n  {d.description or p.summary}")
+        if d.skills:
+            print(f"  Skills ({len(d.skills)}): " + ", ".join(d.skills[:12]) + (" ..." if len(d.skills) > 12 else ""))
+        why = d.reasons_outside
+        if why:
+            print(f"{YELLOW}  Reaches outside the project: {'; '.join(why)}.{RESET}")
+        else:
+            print(f"{GREEN}  Works with your files only (skills, no servers, apps or hooks).{RESET}")
+
+    def _install_plugin(self, d) -> None:
+        p = d.plugin
+        if p.installed:
+            print("It is installed already.")
+            return
+        if not p.available:
+            print(f"It can't be installed here: {p.why_not or 'not allowed for this account'}.")
+            return
+        reaches_out = bool(d.reasons_outside)
+        if reaches_out and not self.settings.outside_tools:
+            print(f"{YELLOW}Not installed: Codex App keeps tools that reach outside the project off, so this plugin "
+                  f"wouldn't work here anyway. To use it, start Codex App with --outside-tools (then it stays off "
+                  f"again at a normal start), or install it in the official Codex app.{RESET}")
+            return
+        print(f"{GREY}Plugins go into Codex's own settings (~/.codex), which the official Codex apps share: it is "
+              f"installed there too.{RESET}")
+        if self.ask(f"Install {p.id}? (y/n) ").strip().lower() not in ("y", "yes"):
+            print("Not installed.")
+            return
+        try:
+            need_sign_in = plugins.install(self.codex, p)
+        except Exception as e:
+            print(f"{RED}Could not install it: {e}{RESET}")
+            return
+        if reaches_out:
+            plugins.record(p.id, True)
+        self._skills = None  # its skills show up in /skills
+        print(f"{GREEN}* Installed {p.id}.{RESET} Its skills are used from the next conversation (/new); "
+              f"/skills lists them." + (" It is switched off again at a normal start (it reaches outside the "
+                                        "project)." if reaches_out else ""))
+        if need_sign_in:
+            print(f"{YELLOW}Sign in to {', '.join(need_sign_in)} in the official Codex app to use those parts.{RESET}")
+
+    def _remove_plugin(self, d) -> None:
+        p = d.plugin
+        if not p.installed:
+            print("It isn't installed.")
+            return
+        print(f"{GREY}This removes it from Codex's own settings, so from the official Codex apps too.{RESET}")
+        if self.ask(f"Remove {p.id}? (y/n) ").strip().lower() not in ("y", "yes"):
+            print("Not removed.")
+            return
+        try:
+            plugins.uninstall(self.codex, p)
+        except Exception as e:
+            print(f"{RED}Could not remove it: {e}{RESET}")
+            return
+        plugins.record(p.id, False)
+        self._skills = None
+        print(f"{GREEN}* Removed {p.id}.{RESET}")
 
     def warn_secrets(self) -> None:
         found = protect.find_secret_files(self.root)
@@ -1660,6 +1783,8 @@ class App:
             self.show_skills()
         elif name == "/mcp":
             self.show_mcp()
+        elif name in ("/plugins", "/plugin"):
+            self.plugins_command(arg)
         elif name == "/secrets":
             self.secrets(arg)
         elif name == "/browser":
