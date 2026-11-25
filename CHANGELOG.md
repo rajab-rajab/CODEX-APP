@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.10.0 (2026-11-25)
 
 - **Team mode: each worker in its own git worktree**, the way official Codex keeps parallel work apart.
   Workers no longer see each other's half-written files or test runs. Each worker's copy starts from the
