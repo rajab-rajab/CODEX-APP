@@ -160,6 +160,14 @@ The default models are the ones Codex recommends in its own list. `gpt-6.2-sol` 
 ("fast, go-to model for coding"). `gpt-6.2-astra` is "our most capable model for complex coding".
 Type `/models` to see the list.
 
+**A cheaper choice for single mode: `gpt-6.1-terra`.** It costs half as much per token as `gpt-6.2-sol`,
+and in the benchmark it passed every run in single mode, for example the complex `ledger` task for about
+$0.10 instead of $0.24. Choosing it is up to you:
+
+- for this session: `/model gpt-6.1-terra`, then `/save` to keep it for this project;
+- for one run: `py main.py --model gpt-6.1-terra`;
+- for every run: `setx CODEX_APP_MODEL gpt-6.1-terra` (Windows) or `export CODEX_APP_MODEL=gpt-6.1-terra`.
+
 ## Install
 
 On Windows, start Python with `py` (the Python launcher). If `python` opens another copy, for example one
