@@ -91,6 +91,24 @@ def hidden_tests(task_folder: Path, project: Path, timeout: int = 300) -> tuple:
     return done.returncode == 0, tail
 
 
+def before_review(task_folder: Path, project: Path, base: Path, tree) -> "bool | None":
+    """Would the run have passed without the planner's review? The hidden tests on the project as it was
+    before the review (the git tree the app recorded), in a folder of its own. None when there is no tree
+    (single mode, or no review step)."""
+    if not tree:
+        return None
+    copy = base / "before-review"
+    index = base / "before-review.index"
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}  # a separate index: the project's own stays as it is
+    try:
+        for args in (["read-tree", tree], ["checkout-index", "-a", f"--prefix={copy.as_posix()}/"]):
+            subprocess.run(["git", *args], cwd=project, capture_output=True, check=True, env=env,
+                           stdin=subprocess.DEVNULL)
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    return hidden_tests(task_folder, copy)[0]
+
+
 def check_task(name: str, folder: Path) -> list:
     """What is wrong with a task ([] if nothing): the start must fail its hidden tests, the solution pass."""
     problems = []
@@ -146,6 +164,7 @@ def run_one(name: str, data: dict, folder: Path, mode: str, repeat: int, work: P
         error = f"stopped after {timeout} s"
     seconds = round(time.monotonic() - started, 1)
     passed, tests = hidden_tests(folder, project)
+    before = before_review(folder, project, base, result.get("before_review_tree"))
     tokens = result.get("tokens") or {}
     return {"task": name, "mode": mode, "repeat": repeat, "passed": passed, "app_ok": bool(result.get("ok")),
             "error": error or result.get("error"), "seconds": result.get("seconds") or seconds,
@@ -154,6 +173,7 @@ def run_one(name: str, data: dict, folder: Path, mode: str, repeat: int, work: P
             "output_tokens": sum(t.get("output", 0) for t in tokens.values()),
             "cost_usd": result.get("cost_usd"), "models": sorted(tokens),
             "by_step": by_step(result.get("steps") or []), "agents": result.get("agents") or {},
+            "review": result.get("review"), "passed_before_review": before,
             "files_changed": [f["path"] for f in result.get("files_changed") or []],
             "hidden_tests": tests if not passed else ""}
 
@@ -201,6 +221,24 @@ def step_rows(runs: list, modes) -> list:
     return rows
 
 
+def review_rows(runs: list, modes) -> list:
+    """Per mode: did the planner's review help? Runs reviewed and skipped, passed before the review and
+    after it, rescued (failed before, passed after) and broken (passed before, failed after)."""
+    rows = []
+    for mode in modes:
+        mine = [r for r in runs if r["mode"] == mode and r.get("passed_before_review") is not None]
+        if not mine:
+            continue
+        rows.append({"mode": mode, "runs": len(mine),
+                     "reviewed": sum(r.get("review") not in (None, "skipped") for r in mine),
+                     "skipped": sum(r.get("review") == "skipped" for r in mine),
+                     "passed_before": sum(bool(r["passed_before_review"]) for r in mine),
+                     "passed_after": sum(bool(r["passed"]) for r in mine),
+                     "rescued": sum(r["passed"] and not r["passed_before_review"] for r in mine),
+                     "broken": sum(r["passed_before_review"] and not r["passed"] for r in mine)})
+    return rows
+
+
 def summarise(runs: list, modes) -> list:
     """One row per mode: runs, passed, pass rate, median seconds and tokens, total cost."""
     rows = []
@@ -244,6 +282,15 @@ def markdown(runs: list, rows: list, tasks: list, when: str, app_version: str) -
         for r in steps:
             out.append(f"| {r['mode']} | {r['step']} | {r['turns']} | {r['tool_calls']} | {r['tokens']:,} | "
                        f"{r['share']}% | {r['uncached_input']:,} | {r['output']:,} | {r['seconds']:.1f} s |")
+    reviews = review_rows(runs, [r["mode"] for r in rows])
+    if reviews:
+        out += ["", "## Did the review help?", "", "The hidden tests also run on the project as it was before the "
+                "planner's review. Rescued: failed before the review, passed after it. Broken: the other way.", "",
+                "| Mode | Runs | Reviewed | Skipped | Passed before review | Passed after | Rescued | Broken |",
+                "|---|---|---|---|---|---|---|---|"]
+        for r in reviews:
+            out.append(f"| {r['mode']} | {r['runs']} | {r['reviewed']} | {r['skipped']} | {r['passed_before']} | "
+                       f"{r['passed_after']} | {r['rescued']} | {r['broken']} |")
     failed = [r for r in runs if not r["passed"]]
     if failed:
         out += ["", "## Failed runs", ""]
@@ -324,7 +371,7 @@ def save_results(out: Path, stamp: str, when: str, runs: list, tasks: list, mode
                                        "was stopped, or is still running.\n\n", 1)
     out.mkdir(parents=True, exist_ok=True)
     data = {"when": when, "app_version": app_version(), "planned_runs": total, "complete": len(runs) == total,
-            "summary": rows, "steps": step_rows(runs, modes), "runs": runs}
+            "summary": rows, "steps": step_rows(runs, modes), "reviews": review_rows(runs, modes), "runs": runs}
     for suffix, text in ((".json", json.dumps(data, indent=2)), (".md", report)):
         path = out / f"{stamp}{suffix}"
         tmp = path.with_name(path.name + ".tmp")

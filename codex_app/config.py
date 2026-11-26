@@ -27,6 +27,14 @@ def _env_bool(name: str, default: bool) -> bool:
 PRICES: dict = {}
 
 EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+REVIEW_CHOICES = ("auto", "always", "never")
+
+
+def review_name(value: str) -> str:
+    """auto, always or never; yes/on mean always and no/off never (CODEX_APP_PLANNER_REVIEW=no)."""
+    value = str(value).strip().lower()
+    return {"yes": "always", "on": "always", "true": "always", "1": "always",
+            "no": "never", "off": "never", "false": "never", "0": "never"}.get(value, value)
 
 # What Codex may do. Codex enforces this itself with its sandbox (github.com/openai/codex).
 PERMISSIONS = {
@@ -71,6 +79,11 @@ class Settings:
     permission: str = "workspace"  # see PERMISSIONS
     approval: str = "deny_all"     # see APPROVALS
     max_review_rounds: int = 2     # dual mode: how many times the planner may send work back
+    # dual/team: when the planner reviews the work. auto: not when the worker's tests passed and the change is
+    # small (review_max_lines changed lines or fewer) and no browser check or merge needs it; always; never.
+    planner_review: str = "auto"
+    review_max_lines: int = 200
+    review_effort: str = ""        # the review's effort; "" = one level below the planner's, at least medium
     update_check: bool = True      # look for a new app version once a day at start
     web_search: bool = False       # let Codex search the web live (official Codex: --search)
 
@@ -110,6 +123,9 @@ class Settings:
         s.permission = permission_name(_env("CODEX_APP_PERMISSION", s.permission))
         s.approval = _env("CODEX_APP_APPROVAL", s.approval)
         s.max_review_rounds = _env_int("CODEX_APP_MAX_REVIEW_ROUNDS", s.max_review_rounds)
+        s.planner_review = review_name(_env("CODEX_APP_PLANNER_REVIEW", s.planner_review))
+        s.review_max_lines = _env_int("CODEX_APP_REVIEW_MAX_LINES", s.review_max_lines)
+        s.review_effort = _env("CODEX_APP_REVIEW_EFFORT", s.review_effort)
         s.update_check = _env_bool("CODEX_APP_UPDATE_CHECK", s.update_check)
         s.web_search = _env_bool("CODEX_APP_SEARCH", s.web_search)
         s.profile = _env("CODEX_APP_PROFILE", s.profile)
@@ -135,6 +151,17 @@ class Settings:
         s.check()
         return s
 
+    def review_effort_now(self) -> str:
+        """The effort of the planner's review: review_effort, or one level below the planner's own effort
+        (high -> medium), never below medium unless the planner itself is lower. A review checks a diff the
+        worker already tested; it needs less reasoning than the plan."""
+        if self.review_effort:
+            return self.review_effort
+        if self.planner_effort not in EFFORT_LEVELS:
+            return self.planner_effort
+        i, floor = EFFORT_LEVELS.index(self.planner_effort), EFFORT_LEVELS.index("medium")
+        return EFFORT_LEVELS[i - 1] if i > floor else self.planner_effort
+
     def thread_config(self, browser: bool = True) -> dict:
         """Extra Codex settings for a thread. browser=False for helpers (reviews, commit messages)."""
         config = {"web_search": "live"} if self.web_search else {}
@@ -147,6 +174,12 @@ class Settings:
         for effort in (self.single_effort, self.planner_effort, self.worker_effort):
             if effort not in EFFORT_LEVELS:
                 raise ValueError(f"effort must be one of {', '.join(EFFORT_LEVELS)}, not '{effort}'")
+        if self.review_effort and self.review_effort not in EFFORT_LEVELS:
+            raise ValueError(f"review effort must be one of {', '.join(EFFORT_LEVELS)}, not '{self.review_effort}'")
+        self.planner_review = review_name(self.planner_review)
+        if self.planner_review not in REVIEW_CHOICES:
+            raise ValueError(f"planner review must be auto, always or never, not '{self.planner_review}'")
+        self.review_max_lines = max(0, self.review_max_lines)
         if self.permission not in PERMISSIONS:
             raise ValueError(f"permission must be one of {', '.join(PERMISSIONS)}, not '{self.permission}'")
         if self.approval not in APPROVALS:
