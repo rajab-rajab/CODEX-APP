@@ -78,7 +78,7 @@ def test_chat_is_answered_fast_and_maths_carefully(tmp_path):
 
 def test_dual_mode_answers_chat_without_the_worker(tmp_path):
     codex = FakeCodex({1: [answer("Paris.")]})
-    mode = DualMode(codex, sdk, tmp_path, Settings())
+    mode = DualMode(codex, sdk, tmp_path, Settings(fresh_review=False))
     assert mode.run("capital of France?", profile="chat") == "Paris."
     assert len(codex.started) == 1 and codex.turns[0]["options"]["effort"] == "low"
 
@@ -88,7 +88,7 @@ def test_dual_mode_answers_chat_without_the_worker(tmp_path):
 def test_structured_verdict(tmp_path):
     events = []
     codex = FakeCodex({1: [answer("1. Fix add"), verdict()], 2: [answer("Changed calc.py.")]})
-    mode = DualMode(codex, sdk, tmp_path, Settings(), on_event=lambda a, k, t: events.append((a, k, t)))
+    mode = DualMode(codex, sdk, tmp_path, Settings(fresh_review=False), on_event=lambda a, k, t: events.append((a, k, t)))
     assert "VERDICT: APPROVED" in mode.run("fix add")
     assert codex.turns[2]["options"]["output_schema"] == VERDICT_SCHEMA
     assert ("planner", "text", "Looks right.\nVERDICT: APPROVED") in events
@@ -99,7 +99,7 @@ def test_structured_verdict_sends_fixes_back(tmp_path):
     codex = FakeCodex({1: [answer("plan"), verdict("CHANGES_NEEDED", "Missing test.", ["add a test for add()"]),
                            verdict()],
                        2: [answer("did it"), answer("added the test")]})
-    DualMode(codex, sdk, tmp_path, Settings()).run("fix add")
+    DualMode(codex, sdk, tmp_path, Settings(fresh_review=False)).run("fix add")
     assert "- add a test for add()" in codex.turns[3]["text"]
 
 
@@ -116,7 +116,7 @@ def test_structured_verdicts_fall_back_to_text(tmp_path):
     codex = FakeCodex({1: [answer("plan"), answer("ok\nVERDICT: APPROVED")], 2: [answer("did it")]})
     start = codex.thread_start
     codex.thread_start = lambda **o: NoSchemaThread(start(**o))
-    settings = Settings()
+    settings = Settings(fresh_review=False)
     assert "APPROVED" in DualMode(codex, sdk, tmp_path, settings).run("fix add")
     assert settings.structured_verdicts is False  # remembered for the rest of the session
 
@@ -138,7 +138,7 @@ def team_plan(*parts, answer_text="Two parts."):
 def test_team_mode_runs_parts_side_by_side(tmp_path):
     codex = FakeCodex({1: [team_plan(("api", ["api.py"]), ("ui", ["ui.js"])), verdict()],
                        2: [answer("did a part")], 3: [answer("did a part")]})
-    mode = TeamMode(codex, sdk, tmp_path, Settings(team_size=3))
+    mode = TeamMode(codex, sdk, tmp_path, Settings(fresh_review=False, team_size=3))
     assert "APPROVED" in mode.run("build the feature")
     assert codex.turns[0]["options"]["output_schema"] == TEAM_PLAN_SCHEMA
     assert [a.name for a in mode.agents()] == ["planner", "worker-1", "worker-2"]
@@ -150,7 +150,7 @@ def test_team_mode_runs_parts_side_by_side(tmp_path):
 
 def test_team_mode_question_needs_no_workers(tmp_path):
     codex = FakeCodex({1: [answer(json.dumps({"answer": "add() subtracts.", "parts": []}))]})
-    mode = TeamMode(codex, sdk, tmp_path, Settings())
+    mode = TeamMode(codex, sdk, tmp_path, Settings(fresh_review=False))
     assert mode.run("what does add do?") == "add() subtracts."
     assert len(codex.started) == 1
 
@@ -158,9 +158,9 @@ def test_team_mode_question_needs_no_workers(tmp_path):
 def test_team_mode_saves_and_resumes_its_workers(tmp_path):
     codex = FakeCodex({1: [team_plan(("a", ["a.py"]), ("b", ["b.py"])), verdict()],
                        2: [answer("x")], 3: [answer("x")]})
-    mode = TeamMode(codex, sdk, tmp_path, Settings())
+    mode = TeamMode(codex, sdk, tmp_path, Settings(fresh_review=False))
     mode.run("t")
-    resumed = TeamMode(codex, sdk, tmp_path, Settings())
+    resumed = TeamMode(codex, sdk, tmp_path, Settings(fresh_review=False))
     resumed.load_state(json.loads(json.dumps(mode.state())))
     assert [a.name for a in resumed.agents()] == ["planner", "worker-1", "worker-2"]
     assert {a.thread_id for a in resumed.workers()} == {"thr_2", "thr_3"}
@@ -170,7 +170,7 @@ def test_team_mode_saves_and_resumes_its_workers(tmp_path):
 
 def test_steering_goes_to_the_agent_at_work(tmp_path):
     from test_app import FakeTurn
-    mode = DualMode(FakeCodex({}), sdk, tmp_path, Settings())
+    mode = DualMode(FakeCodex({}), sdk, tmp_path, Settings(fresh_review=False))
     assert mode.steer("also add a test") == []  # nothing is running
     mode.worker._turn = turn = FakeTurn([])
     assert mode.busy and mode.steer("also add a test") == ["worker"]
@@ -268,7 +268,7 @@ def test_goal_runs_and_can_be_steered(tmp_path, monkeypatch):
 def test_dual_goal_is_checked_by_the_planner(tmp_path, monkeypatch):
     monkeypatch.setattr(goals, "start", lambda c, t, o, token_budget=None: FakeGoal(answer("Done.")))
     codex = FakeCodex({2: [verdict()]})  # thread 1 is the worker's (the goal), thread 2 the planner's
-    mode = DualMode(codex, sdk, tmp_path, Settings())
+    mode = DualMode(codex, sdk, tmp_path, Settings(fresh_review=False))
     assert "APPROVED" in mode.run_goal("make the tests pass")
     assert "GOAL:\nmake the tests pass" in codex.turns[0]["text"]
 

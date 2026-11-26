@@ -171,7 +171,7 @@ def test_team_workers_get_their_own_worktrees_and_are_merged(tmp_path):
                          work={"thr_2": edit("shared.py", "one = 1", "one = 'top'"),
                                "thr_3": edit("shared.py", "five = 5", "five = 'bottom'")})
     events = []
-    mode = TeamMode(codex, sdk, root, Settings(team_size=2), on_event=lambda a, k, t: events.append(t))
+    mode = TeamMode(codex, sdk, root, Settings(team_size=2, fresh_review=False), on_event=lambda a, k, t: events.append(t))
     assert "APPROVED" in mode.run("change both ends")
 
     worker_turns = [t for t in codex.turns if t["thread"] in ("thr_2", "thr_3")]
@@ -193,7 +193,7 @@ def test_team_conflict_is_reported_to_the_planner(tmp_path):
                           2: [answer("did a")], 3: [answer("did b")]},
                          work={"thr_2": edit("shared.py", "one = 1", "one = 'a'"),
                                "thr_3": edit("shared.py", "one = 1", "one = 'b'")})
-    mode = TeamMode(codex, sdk, root, Settings(team_size=2))
+    mode = TeamMode(codex, sdk, root, Settings(team_size=2, fresh_review=False))
     mode.run("t")
     text = (root / "shared.py").read_text()
     assert text.startswith("one = 'a'") or text.startswith("one = 'b'")  # one merged, never both half-way
@@ -203,8 +203,8 @@ def test_team_conflict_is_reported_to_the_planner(tmp_path):
 
 def test_one_worker_or_worktrees_off_works_in_the_project_folder(tmp_path):
     root = repo(tmp_path / "p")
-    for settings, plan in ((Settings(team_size=1), team_plan(("a", ["a.py"]), ("b", ["b.py"]))),
-                           (Settings(team_size=2, team_worktrees=False), team_plan(("a", ["a.py"]), ("b", ["b.py"])))):
+    for settings, plan in ((Settings(team_size=1, fresh_review=False), team_plan(("a", ["a.py"]), ("b", ["b.py"]))),
+                           (Settings(team_size=2, team_worktrees=False, fresh_review=False), team_plan(("a", ["a.py"]), ("b", ["b.py"])))):
         codex = WorkingCodex({1: [plan, verdict()], 2: [answer("x"), answer("y")], 3: [answer("y")]}, work={})
         TeamMode(codex, sdk, root, settings).run("t")
         assert all("cwd" not in t["options"] for t in codex.turns)

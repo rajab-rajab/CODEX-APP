@@ -201,7 +201,7 @@ def test_parse_verdict():
 
 
 def test_dual_mode_plan_work_review(tmp_path):
-    s = Settings()
+    s = Settings(fresh_review=False)
     # thread 1 = planner, thread 2 = worker
     codex = FakeCodex({1: [answer("1. Fix add in calc.py"), answer("Tests pass.\nVERDICT: APPROVED")],
                        2: [answer("Changed calc.py, tests pass.")]})
@@ -217,25 +217,25 @@ def test_dual_mode_plan_work_review(tmp_path):
 def test_dual_mode_sends_work_back(tmp_path):
     codex = FakeCodex({1: [answer("plan"), answer("VERDICT: CHANGES_NEEDED\n- add a test"), answer("VERDICT: APPROVED")],
                        2: [answer("did it"), answer("added test")]})
-    assert parse_verdict(DualMode(codex, sdk, tmp_path, Settings()).run("task")) == "APPROVED"
+    assert parse_verdict(DualMode(codex, sdk, tmp_path, Settings(fresh_review=False)).run("task")) == "APPROVED"
     assert "ASKS FOR CHANGES" in codex.turns[3]["text"]
 
 
 def test_dual_mode_question_skips_the_worker(tmp_path):
     codex = FakeCodex({1: [answer("add() subtracts.\nPLAN: NONE")]})
-    assert "subtracts" in DualMode(codex, sdk, tmp_path, Settings()).run("what does add do?")
+    assert "subtracts" in DualMode(codex, sdk, tmp_path, Settings(fresh_review=False)).run("what does add do?")
     assert len(codex.started) == 1  # the worker thread was never started
 
 
 def test_dual_mode_stops_after_review_limit(tmp_path):
     no = answer("VERDICT: CHANGES_NEEDED\n- again")
     codex = FakeCodex({1: [answer("plan"), no, list(no)], 2: [answer("w1"), answer("w2")]})
-    assert parse_verdict(DualMode(codex, sdk, tmp_path, Settings(max_review_rounds=1)).run("t")) == "CHANGES_NEEDED"
+    assert parse_verdict(DualMode(codex, sdk, tmp_path, Settings(fresh_review=False, max_review_rounds=1)).run("t")) == "CHANGES_NEEDED"
 
 
 def test_permission_change_in_dual_mode_keeps_planner_read_only(tmp_path):
     codex = FakeCodex({})
-    mode = DualMode(codex, sdk, tmp_path, Settings())
+    mode = DualMode(codex, sdk, tmp_path, Settings(fresh_review=False))
     mode.set_permission("full")
     assert mode.worker.sandbox == sdk.Sandbox.full_access and mode.planner.sandbox == sdk.Sandbox.read_only
 
@@ -244,13 +244,13 @@ def test_permission_change_in_dual_mode_keeps_planner_read_only(tmp_path):
 
 def test_save_and_resume_continues_the_codex_threads(tmp_path):
     codex = FakeCodex({1: [answer("plan\nPLAN: NONE"), answer("again\nPLAN: NONE")]})
-    mode = DualMode(codex, sdk, tmp_path, Settings())
+    mode = DualMode(codex, sdk, tmp_path, Settings(fresh_review=False))
     mode.run("question")
     path = sessions.new_session_path("dual")
     sessions.save(path, tmp_path, mode.state(), "question")
 
     _, data = sessions.latest_for_project(tmp_path)
-    resumed = DualMode(codex, sdk, tmp_path, Settings())
+    resumed = DualMode(codex, sdk, tmp_path, Settings(fresh_review=False))
     resumed.load_state(json.loads(json.dumps(data)))
     resumed.run("follow up")
     assert codex.resumed == ["thr_1"] and len(codex.started) == 1
@@ -342,7 +342,7 @@ def test_dual_mode_gives_attachments_to_planner_and_first_worker_turn(tmp_path):
     codex = FakeCodex({1: [answer("plan"), answer("VERDICT: CHANGES_NEEDED\n- x"), answer("VERDICT: APPROVED")],
                        2: [answer("did it"), answer("fixed")]})
     mention = sdk.MentionInput("calc.py", str(tmp_path / "calc.py"))
-    DualMode(codex, sdk, tmp_path, Settings()).run("fix", [mention])
+    DualMode(codex, sdk, tmp_path, Settings(fresh_review=False)).run("fix", [mention])
     planner_first, worker_first, _, worker_second, _ = [t["text"] for t in codex.turns]
     assert mention in planner_first and mention in worker_first and isinstance(worker_second, str)
 
@@ -483,7 +483,7 @@ def test_planner_reviews_the_workers_diff(tmp_path):
     diff = "--- a/calc.py\n+++ b/calc.py\n-a - b\n+a + b\n"
     worker_turn = [ev("turn/diff/updated", diff=diff)] + answer("Changed calc.py.")
     codex = FakeCodex({1: [answer("1. Fix add"), answer("VERDICT: APPROVED")], 2: [worker_turn]})
-    DualMode(codex, sdk, tmp_path, Settings()).run("fix add")
+    DualMode(codex, sdk, tmp_path, Settings(fresh_review=False)).run("fix add")
     review_request = codex.turns[2]["text"]
     assert "THE WORKER'S CHANGES:" in review_request and "+a + b" in review_request
 

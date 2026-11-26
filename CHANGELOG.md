@@ -2,6 +2,19 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **The review has a fresh, small conversation of its own** in dual and team mode: the task, the plan,
+  the worker's report, the diff and the test results, on the planner's model (`CODEX_APP_REVIEW_MODEL`
+  picks another). In the 1.20.0 benchmark the planner's model made up 67-88% of dual mode's cost, and a
+  review in its long conversation re-sent everything it had read while planning, mostly no longer cached.
+  `CODEX_APP_FRESH_REVIEW=no` keeps the review in the planner's conversation.
+- The app says why each review runs or is skipped, and `--json` has it as `review_reason`. The benchmark
+  lists the reason for every run.
+- Fix: the record of the project before the review (`before_review_tree`, which the benchmark tests) was
+  missing when the worker's commands had written files Codex's Windows sandbox locks. Those files are
+  given back first now. The benchmark's "Did the review help?" counts such runs as "not checked".
+
 ## 1.20.0 (2026-11-26)
 
 - **Dual and team mode cost less: the planner reviews only when it's worth it.** With

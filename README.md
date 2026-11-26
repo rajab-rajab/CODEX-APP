@@ -11,7 +11,7 @@ conversations and self-updates.
 | Mode | Who does what | Models (default) |
 |---|---|---|
 | **A) Single model** | One Codex thread reads the code, makes the changes and checks them | `gpt-6.2-sol` |
-| **B) Dual model** | A **planner** reads the code and writes a plan. A **worker** carries it out. The planner then reviews the diff and the worker's test results, and either approves or sends the work back with fixes (up to 2 times). A small change whose tests passed skips the review | Planner `gpt-6.2-astra`, worker `gpt-6.2-sol` |
+| **B) Dual model** | A **planner** reads the code and writes a plan. A **worker** carries it out. Then a reviewer on the planner's model checks the diff and the worker's test results, and either approves or sends the work back with fixes (up to 2 times). A small change whose tests passed skips the review | Planner `gpt-6.2-astra`, worker `gpt-6.2-sol` |
 | **C) Team** (`--mode team`) | Like dual, but the planner splits the task into parts that touch different files, and up to 3 **workers** (`--team-size`) do them **at the same time**. The planner then checks everything together | Planner `gpt-6.2-astra`, workers `gpt-6.2-sol` |
 
 In dual and team mode:
@@ -32,6 +32,14 @@ In dual and team mode:
   cover the change (and in team mode on the merged result), instead of running them all again.
 - **The review runs at a lower effort than the plan**: one level below the planner's (`high` -> `medium`),
   never below `medium` (`CODEX_APP_REVIEW_EFFORT` sets it). It checks a diff the worker already tested.
+- **The review has a fresh, small conversation of its own** (read-only, on the planner's model;
+  `CODEX_APP_REVIEW_MODEL` picks another). It gets only the task, the plan, the worker's report, the diff
+  and the test results. The planner's own conversation holds everything it read while planning, and by
+  the time the worker is done OpenAI's cache of it has usually expired, so a review there paid for all of
+  it again. Fix rounds stay with the same reviewer. `CODEX_APP_FRESH_REVIEW=no` has the planner review in
+  its own conversation, as before.
+- The app says why each review runs or is skipped (for example "the worker's last test command failed"),
+  and `--json` has it as `review_reason`.
 - The planner's verdict comes as **structured output** (JSON that Codex must follow), so it can't be
   missed or misread. If an engine or model can't do that, the app falls back to a text verdict.
 - Parts that would change the same file never run at the same time in team mode.
@@ -578,6 +586,8 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 | `CODEX_APP_PLANNER_REVIEW` | `auto` | Dual and team: when the planner reviews the work: `auto` (not for a small change whose tests passed), `always`, or `never` (`no`) |
 | `CODEX_APP_REVIEW_MAX_LINES` | `200` | ... how many changed lines still count as "small" |
 | `CODEX_APP_REVIEW_EFFORT` | one below the planner's | The review's reasoning effort (`high` planner: `medium`) |
+| `CODEX_APP_REVIEW_MODEL` | the planner's | The review's model, for example `gpt-6.2-sol` to make it cheaper |
+| `CODEX_APP_FRESH_REVIEW` | `yes` | Review in a fresh, small conversation (`no`: in the planner's own) |
 | `CODEX_APP_UPDATE_CHECK` | `yes` | Look for a new app version once a day at start |
 
 Models can also be set with `--model`, `--planner-model` and `--worker-model`.
@@ -660,7 +670,8 @@ model has a price (`/prices`). `--goal` works with `--json` too.
 `plan`, `work`, `review` and `fix` in dual and team mode (each team worker's part is a `work` step);
 `browser check` for the browser check; `answer` for a chat message; `goal` for `/goal`. In dual and
 team mode, `review` says how the planner's review went (`skipped`, `approved`, `changes needed`, `no
-verdict`) and `before_review_tree` is the project just before it, as a git tree id. `tool_calls`
+verdict`), `review_reason` why it ran or was skipped, and `before_review_tree` is the project just before
+it, as a git tree id. The reviewer is an agent of its own (`reviewer`) in `steps` and `agents`. `tool_calls`
 counts the commands, file changes and other tools Codex used in that turn. `agents` sums the steps of
 each agent (planner, worker, worker-2, ...). `input` counts all input, cached or not: the input that
 isn't cached (`input` minus `cached`) is what costs the most.
@@ -810,7 +821,8 @@ py bench/run.py --modes single,dual --repeat 3 --tasks median-bug,two-fixes
 - **Did the review help?** In dual and team mode the hidden tests also run on the project as it was
   just before the planner's review. The report counts per mode the runs reviewed and skipped, passed
   before and after the review, rescued (failed before, passed after) and broken (the other way), so you
-  can see whether the review is worth what it costs.
+  can see whether the review is worth what it costs. Under the table, each run says why its review ran
+  or was skipped.
 - **Costs.** Runs are billed like any task: 18 runs for all six tasks in all three modes. Memory, the
   browser check, the update check and the finish signal are off, and app data goes to a temporary folder,
   so your notes and `/stats` stay as they were. `--power high` runs every mode at a higher power level, and
