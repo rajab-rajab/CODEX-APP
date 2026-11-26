@@ -66,8 +66,9 @@ APP_HOME = Path(os.environ.get("CODEX_APP_HOME", Path.home() / ".codex-app"))
 @dataclass
 class Settings:
     # A) Single model mode: one model plans and does the work.
-    # Models come from Codex's own list (/models). gpt-6.2-sol is Codex's default coding model.
-    single_model: str = "gpt-6.2-sol"
+    # Models come from Codex's own list (/models). gpt-6.1-terra: half the price of gpt-6.2-sol (Codex's own
+    # default), and it passed every benchmark task in single mode (see the README's "Benchmark").
+    single_model: str = "gpt-6.1-terra"
     single_effort: str = "medium"
 
     # B) Dual model mode: a planner plans and reviews, a worker does the work.

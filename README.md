@@ -10,7 +10,7 @@ conversations and self-updates.
 
 | Mode | Who does what | Models (default) |
 |---|---|---|
-| **A) Single model** | One Codex thread reads the code, makes the changes and checks them | `gpt-6.2-sol` |
+| **A) Single model** | One Codex thread reads the code, makes the changes and checks them | `gpt-6.1-terra` |
 | **B) Dual model** | A **planner** reads the code and writes a plan. A **worker** carries it out. Then a reviewer on the planner's model checks the diff and the worker's test results, and either approves or sends the work back with fixes (up to 2 times). A small change whose tests passed skips the review | Planner `gpt-6.2-astra`, worker `gpt-6.2-sol` |
 | **C) Team** (`--mode team`) | Like dual, but the planner splits the task into parts that touch different files, and up to 3 **workers** (`--team-size`) do them **at the same time**. The planner then checks everything together | Planner `gpt-6.2-astra`, workers `gpt-6.2-sol` |
 
@@ -156,9 +156,11 @@ cheap as it can be. `auto` picks one for each message from its wording, without 
 | `chat` | A question or conversation: answered directly at `low` effort, without the planner/worker steps. Fast and cheap |
 | `maths` | A calculation or proof: at least `high` effort, worked step by step, checked (for example with a short Python calculation), ending with `Answer:` |
 
-The default models are the ones Codex recommends in its own list. `gpt-6.2-sol` is its default
-("fast, go-to model for coding"). `gpt-6.2-astra` is "our most capable model for complex coding".
-Type `/models` to see the list.
+Single mode uses `gpt-6.1-terra` ("efficient model"). It costs half as much as `gpt-6.2-sol`, Codex's own
+default ("fast, go-to model for coding"), and in the benchmark it passed every task, for example the complex
+`ledger` task for about $0.10 instead of $0.24. The other roles use the models Codex recommends:
+`gpt-6.2-sol` for workers and `gpt-6.2-astra` ("our most capable model for complex coding") for the planner.
+`CODEX_APP_MODEL=gpt-6.2-sol` (or `--model`) goes back to Codex's default. Type `/models` to see the list.
 
 ## Install
 
@@ -553,7 +555,7 @@ Each conversation's Codex thread IDs are saved in `C:\Users\<you>\.codex-app\ses
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CODEX_APP_MODEL` | `gpt-6.2-sol` | Single mode model |
+| `CODEX_APP_MODEL` | `gpt-6.1-terra` | Single mode model |
 | `CODEX_APP_EFFORT` | `medium` | Single mode effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
 | `CODEX_APP_PLANNER_MODEL` | `gpt-6.2-astra` | Dual mode planner |
 | `CODEX_APP_PLANNER_EFFORT` | `high` | Planner effort |

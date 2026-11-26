@@ -2,6 +2,13 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Single mode uses `gpt-6.1-terra`** instead of `gpt-6.2-sol`. It costs half as much per token, and in
+  the benchmark (ledger and median-bug, 4 runs) it passed every run: ledger for $0.09-0.12 instead of
+  $0.22-0.27, in about the same time. `CODEX_APP_MODEL=gpt-6.2-sol` (or `--model gpt-6.2-sol`) goes back.
+  Dual and team mode keep their models.
+
 ## 1.21.0 (2026-11-26)
 
 - **The review has a fresh, small conversation of its own** in dual and team mode: the task, the plan,

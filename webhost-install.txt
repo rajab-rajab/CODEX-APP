@@ -5,7 +5,7 @@ Part 1: on a Windows PC
 Part 2: on Mountain Web Hosting (Web SSH)
 
 Codex App is OpenAI's Codex (github.com/openai/codex) with two modes:
-  A) single model mode   (gpt-6.2-sol)
+  A) single model mode   (gpt-6.1-terra)
   B) dual model mode     (gpt-6.2-astra planner, gpt-6.2-sol worker)
 It is a program you use in a terminal. It is NOT a website.
 

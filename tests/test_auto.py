@@ -60,7 +60,7 @@ def test_prices_are_saved_and_used(tmp_path, capsys):
 
 
 def test_cost_shows_after_a_task_once_a_price_is_set(tmp_path, capsys):
-    costs.set_price("gpt-6.2-sol", 2, 0.5, 10)
+    costs.set_price("gpt-6.1-terra", 2, 0.5, 10)
     app, _ = make_app(tmp_path, {1: [used(1_000_000, 0, 100_000)]})
     app.run_task("fix it")
     assert "about $3.0000" in capsys.readouterr().out
@@ -73,12 +73,12 @@ def test_each_task_is_logged_and_summed(tmp_path, capsys):
     app.run_task("one")
     app.run_task("two")  # Codex reports running totals: only the difference is logged
     log = costs.read_log()
-    assert [e["models"] for e in log] == [{"gpt-6.2-sol": [1000, 200, 100]}, {"gpt-6.2-sol": [2000, 800, 200]}]
+    assert [e["models"] for e in log] == [{"gpt-6.1-terra": [1000, 200, 100]}, {"gpt-6.1-terra": [2000, 800, 200]}]
     assert log[0]["project"] == str(tmp_path) and "fix" not in json.dumps(log)  # no messages in the log
     app.command("/stats")
     out = capsys.readouterr().out
-    assert "3,300 tokens" in out and "No price for gpt-6.2-sol" in out
-    costs.set_price("gpt-6.2-sol", 1, 0.5, 10)
+    assert "3,300 tokens" in out and "No price for gpt-6.1-terra" in out
+    costs.set_price("gpt-6.1-terra", 1, 0.5, 10)
     app.command("/stats")
     # (800 x $1 + 200 x $0.5 + 100 x $10) + (1200 x $1 + 800 x $0.5 + 200 x $10), per million: today's prices,
     # for earlier work too
@@ -108,7 +108,7 @@ def test_result_reports_answer_files_and_tokens(tmp_path):
     root.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     (root / "a.txt").write_text("a", encoding="utf-8")
-    costs.set_price("gpt-6.2-sol", 1, 0.5, 10)
+    costs.set_price("gpt-6.1-terra", 1, 0.5, 10)
     app, codex = make_app(root, {1: [used(1_000_000, 0, 100_000)]})
     original_send = app.mode.agent.send
 
@@ -120,7 +120,7 @@ def test_result_reports_answer_files_and_tokens(tmp_path):
     result = app.result()
     assert result["ok"] is True and result["answer"] == "x" and result["mode"] == "single"
     assert result["files_changed"] == [{"path": "b.txt", "change": "added"}]
-    assert result["tokens"] == {"gpt-6.2-sol": {"input": 1_000_000, "cached": 0, "output": 100_000}}
+    assert result["tokens"] == {"gpt-6.1-terra": {"input": 1_000_000, "cached": 0, "output": 100_000}}
     assert result["cost_usd"] == 2.0
     json.dumps(result)  # must be plain JSON
 

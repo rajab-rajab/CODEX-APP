@@ -185,7 +185,7 @@ def test_permission_change_goes_with_the_next_turn(tmp_path):
 def test_single_mode(tmp_path):
     codex = FakeCodex({1: [answer("done")]})
     assert SingleMode(codex, sdk, tmp_path, Settings()).run("task") == "done"
-    assert codex.started[0]["model"] == "gpt-6.2-sol"
+    assert codex.started[0]["model"] == "gpt-6.1-terra"
 
 
 def test_plan_permission_means_read_only(tmp_path):
