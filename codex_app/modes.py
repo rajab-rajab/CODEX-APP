@@ -20,7 +20,7 @@ from pathlib import Path
 import copy
 from contextlib import nullcontext
 
-from . import approvals, browser as browser_tool, perms, profiles, protect, webcheck, worktrees
+from . import approvals, browser as browser_tool, perms, profiles, protect, undo, webcheck, worktrees
 from .agent import CodexAgent, Usage
 from .config import Settings
 
@@ -73,7 +73,9 @@ When you get a TASK:
 When you get the WORKER'S REPORT:
 - It comes with THE WORKER'S CHANGES: the exact diff Codex recorded. Review that diff rather than
   re-reading whole files; open a file only where you need more context, or when the diff was cut short.
-- Run the tests if the project has them.
+- It comes with THE WORKER'S TEST RUNS too: the test commands Codex recorded, their exit codes and the end
+  of their output. Don't run the same tests again. Run tests only when there are none, they failed, their
+  output looks wrong, or they don't cover the change.
 - A BROWSER CHECK, when there is one, is what a separate checker saw when it opened the changed pages in a
   real browser. Weigh it like a test result: a page that doesn't load or doesn't show the change is a
   reason to ask for fixes.
@@ -364,6 +366,43 @@ def changes_for_review(diff: str, limit: int = REVIEW_DIFF_LIMIT) -> str:
     return f"THE WORKER'S CHANGES:\n```diff\n{diff}\n```"
 
 
+# Commands that run a project's tests. A worker's tests "passed" when the last of these exited with 0.
+TEST_COMMAND = re.compile(
+    r"\b(pytest|py\.test|unittest|tox|nox|(npm|pnpm|yarn|bun)( run)? test|jest|vitest|mocha|go test|cargo test|"
+    r"mvnw?\S* test|gradlew?\S* test|dotnet test|rspec|phpunit|ctest|make (test|check))\b", re.IGNORECASE)
+TEST_OUTPUT_LIMIT = 6_000  # characters of the worker's test output given to the planner
+
+
+def test_runs(commands) -> list:
+    """The commands among `commands` (agent.last_commands) that ran tests."""
+    return [c for c in commands or [] if TEST_COMMAND.search(str(c.get("command", "")))]
+
+
+def tests_passed(commands) -> bool:
+    runs = test_runs(commands)
+    return bool(runs) and runs[-1].get("exit_code") == 0
+
+
+def changed_lines(diff: str) -> int:
+    """Lines added or removed in a unified diff."""
+    return sum(1 for line in (diff or "").splitlines()
+               if line[:1] in "+-" and not line.startswith(("+++", "---")))
+
+
+def test_report(commands, title: str = "THE WORKER'S TEST RUNS") -> str:
+    """The worker's test commands, exit codes and the end of their output, for the planner's review."""
+    runs = test_runs(commands)
+    if not runs:
+        return f"{title}: Codex recorded no test command. Run the tests yourself if the project has them."
+    shown, left = [], TEST_OUTPUT_LIMIT
+    for c in reversed(runs[-4:]):  # the latest runs first, so they fit
+        out = str(c.get("output", ""))[-left:] if left > 0 else ""
+        left -= len(out)
+        shown.append(f"$ {c.get('command', '')}\nexit code {c.get('exit_code')}" + (f"\n{out}" if out else ""))
+    return (f"{title} (the commands Codex recorded, their exit codes and the end of their output):\n```text\n"
+            + "\n\n".join(reversed(shown)) + "\n```")
+
+
 def parse_verdict(review: str):
     """'APPROVED', 'CHANGES_NEEDED', or None if the planner gave no verdict line."""
     found = _VERDICT.findall(review or "")
@@ -415,10 +454,11 @@ class DualMode(_Mode):
     def review(self, message: str) -> tuple:
         """Ask the planner for its verdict. (verdict or None, the review as text)."""
         self.planner.step = "review"
+        effort = self.settings.review_effort_now()
         if self.settings.structured_verdicts:
             try:
                 raw = self.planner.send(message + "\n\nGive your verdict in the JSON form your output schema asks for.",
-                                        output_schema=VERDICT_SCHEMA)
+                                        output_schema=VERDICT_SCHEMA, effort=effort)
             except self.sdk.CodexError as e:
                 self.settings.structured_verdicts = False  # this engine or model can't: use text from now on
                 self._notice(f"Structured verdicts aren't available here ({e}); using text verdicts.")
@@ -431,11 +471,26 @@ class DualMode(_Mode):
                     text, verdict = raw, parse_verdict(raw)  # it answered in text after all
                 self.on_event(self.planner.name, "text", text)
                 return verdict, text
-        review = self.planner.send(message)
+        review = self.planner.send(message, effort=effort)
         return parse_verdict(review), review
 
-    def _review_loop(self, report: str, diff_text: str, fix_worker: CodexAgent) -> str:
-        """Planner checks the work; sends it back to fix_worker up to max_review_rounds times."""
+    def _review_loop(self, report: str, diff_text: str, fix_worker: CodexAgent, commands=(), raw_diff: str = "",
+                     tests: str = "", must_review: str = "") -> str:
+        """Planner checks the work; sends it back to fix_worker up to max_review_rounds times. It skips the
+        review when skip_review says so, and then the worker's report is the answer.
+        commands, raw_diff: what the worker ran and changed, for that decision. tests: the worker's test runs
+        for the planner. must_review: why the planner reviews even when reviews are off ("" if no reason)."""
+        try:
+            self.before_review_tree = undo.snapshot(self.root)  # the benchmark tests this too: did the review help?
+        except Exception:
+            self.before_review_tree = None
+        if not must_review and report.startswith(("[Codex could not finish", "[Stopped")):
+            must_review = "the worker didn't finish"
+        why = self.skip_review(commands, raw_diff, must_review)
+        if why:
+            self.review_outcome = "skipped"
+            self._notice(f"Planner review skipped: {why}. CODEX_APP_PLANNER_REVIEW=always reviews every change.")
+            return report
         review = ""
         for round_number in range(self.max_review_rounds + 1):
             if round_number:
@@ -444,18 +499,55 @@ class DualMode(_Mode):
                 report = fix_worker.send(f"THE PLANNER REVIEWED THE WORK AND ASKS FOR CHANGES:\n{review}\n\n"
                                          "Make these fixes.")
                 diff_text = changes_for_review(fix_worker.last_diff)
+                tests = test_report(fix_worker.last_commands, "THE WORKER'S TEST RUNS (in this fix)")
             seen = self.browser_check(report, diff_text, fix_worker.last_diff if round_number else "")
             self._notice("Planner is checking the work.")
-            verdict, review = self.review(f"WORKER'S REPORT:\n{report}\n\n{diff_text}{seen}\n\n"
+            verdict, review = self.review(f"WORKER'S REPORT:\n{report}\n\n{diff_text}"
+                                          + (f"\n\n{tests}" if tests else "") + f"{seen}\n\n"
                                           "Check the work and give your verdict.")
             if verdict == "APPROVED":
+                self.review_outcome = "approved"
                 self._notice("Planner approved the work.")
                 return review
             if verdict is None:
+                self.review_outcome = "no verdict"
                 self._notice("Planner gave no verdict; stopping here so you can decide.")
                 return review
+        self.review_outcome = "changes needed"
         self._notice(f"Still not approved after {self.max_review_rounds} rounds of fixes; stopping so you can decide.")
         return review
+
+    def skip_review(self, commands, raw_diff: str, must_review: str = ""):
+        """Why the planner needn't review this work, or None when it should. A review re-reads the change
+        on the planner's (dearer) model; when the worker's own tests passed on a small change it rarely
+        finds anything (see the benchmark), so "auto" skips it then."""
+        choice = self.settings.planner_review
+        if choice == "always":
+            return None
+        if must_review:
+            if choice == "never":
+                self._notice(f"The planner reviews anyway: {must_review}.")
+            return None
+        if choice == "never":
+            return "the planner's review is off (CODEX_APP_PLANNER_REVIEW=never)"
+        if not (raw_diff or "").strip() or not tests_passed(commands):
+            return None  # nothing changed (did the worker do it?), or no passing tests: review it
+        lines = changed_lines(raw_diff)
+        if lines > self.settings.review_max_lines or self._web_change(raw_diff):
+            return None
+        last = str(test_runs(commands)[-1].get("command", "")).strip()
+        last = last if len(last) <= 60 else last[:57] + "..."
+        return f"the worker's tests passed ({last}) and the change is small ({lines} changed lines)"
+
+    def _web_change(self, *diffs: str) -> bool:
+        """True when the browser check would look at these changes, so the review must run."""
+        paths = webcheck.changed_paths(*diffs)
+        return bool(self.settings.browser_check and paths and webcheck.is_web_change(paths, self.root))
+
+    def _begin(self, task: str) -> None:
+        self._task = task  # for the browser check
+        self.review_outcome = None      # skipped, approved, changes needed, no verdict (for --json)
+        self.before_review_tree = None  # the project before the review (for the benchmark)
 
     def browser_check(self, *diffs: str) -> str:
         """When the changes touch web pages: what a separate checker saw in a real browser, as a BROWSER CHECK
@@ -496,7 +588,7 @@ class DualMode(_Mode):
         return f"\n\nBROWSER CHECK (a separate checker opened the changed pages in a real browser):\n{text}"
 
     def run(self, task: str, attachments=(), profile: str = "coding") -> str:
-        self._task = task
+        self._begin(task)
         if profile in ("chat", "maths"):
             # Nothing to build: the planner answers, and the worker isn't called.
             return self._ask(self.planner, f"QUESTION (answer it yourself; no plan is needed):\n{task}",
@@ -512,7 +604,9 @@ class DualMode(_Mode):
         # The worker sees the user's images and files with its instructions too.
         report = self.worker.send(with_attachments(
             self.sdk, f"TASK:\n{task}\n\nPLAN FROM THE PLANNER:\n{plan}\n\nCarry out the plan.", attachments))
-        return self._review_loop(report, changes_for_review(self.worker.last_diff), self.worker)
+        commands, diff = self.worker.last_commands, self.worker.last_diff
+        return self._review_loop(report, changes_for_review(diff), self.worker, commands=commands, raw_diff=diff,
+                                 tests=test_report(commands))
 
     def run_goal(self, objective: str, token_budget=None) -> str:
         worker = self.workers()[0]
@@ -543,9 +637,11 @@ When you get a TASK:
 - If the task needs no change to files (a question), put your full answer in "answer" and no parts.
 
 When you get the WORKERS' REPORTS:
-- Each comes with the exact diff of that part. Review the diffs rather than re-reading whole files,
-  check the parts fit together, and run the tests if the project has them. Workers may each have worked
-  in their own copy of the project; their changes are merged into the project folder before you check.
+- Each comes with the exact diff of that part and its test runs (commands, exit codes, the end of their
+  output). Review the diffs rather than re-reading whole files and check the parts fit together. Workers
+  may each have worked in their own copy of the project; their changes are merged into the project folder
+  before you check. When several workers' parts were merged, run the tests once on the merged project;
+  otherwise run them only when there are none, they failed, or they don't cover the change.
   A part marked NOT MERGED is not in the project folder: ask for it to be redone in your fixes.
 - A BROWSER CHECK, when there is one, is what a separate checker saw when it opened the changed pages in a
   real browser. Weigh it like a test result.
@@ -648,7 +744,7 @@ class TeamMode(DualMode):
         super().load_state(state)
 
     def run(self, task: str, attachments=(), profile: str = "coding") -> str:
-        self._task = task  # for the browser check
+        self._begin(task)
         if profile in ("chat", "maths"):
             return self._ask(self.planner, f"QUESTION (answer it yourself; no plan is needed):\n{task}",
                              attachments, profile)
@@ -690,9 +786,18 @@ class TeamMode(DualMode):
         report = "\n\n".join(
             f"--- {results[i][0]}, part {i + 1}: {parts[i].get('title', '')}\n{results[i][1]}\n"
             f"{changes_for_review(results[i][2], limit).replace(chr(39) + 'S CHANGES', chr(39) + 'S CHANGES FOR THIS PART')}"
+            f"\n{test_report(results[i][3], 'TEST RUNS FOR THIS PART')}"
             f"{merge_notes.get(i, '')}"
             for i in sorted(results))
-        return self._review_loop(f"(the team's reports, one per part)\n{report}", "", self._worker(0))
+        # Parts merged from several workers were never tested together, and a part that failed or wasn't
+        # merged needs the planner: then it always reviews. One worker's tests count like dual mode's.
+        must = ("several workers' parts were merged, and nobody has tested them together" if len(buckets) > 1
+                else "a part wasn't merged" if merge_notes
+                else "a part failed" if any(r[1].startswith("[failed:") for r in results.values()) else "")
+        commands = [c for i in sorted(results) for c in results[i][3]]
+        raw_diff = "\n".join(results[i][2] or "" for i in sorted(results))
+        return self._review_loop(f"(the team's reports, one per part)\n{report}", "", self._worker(0),
+                                 commands=commands, raw_diff=raw_diff, must_review=must)
 
     # --- worktrees: each worker in its own copy of the project (see worktrees.py) ------------------
 
@@ -743,7 +848,7 @@ class TeamMode(DualMode):
 
     def _run_parts(self, task: str, parts: list, buckets: list, attachments, trees: list) -> tuple:
         """Run every bucket on its own worker at the same time, then merge worktrees back in order.
-        ({part: (worker name, report, diff)}, {part: note for the planner})."""
+        ({part: (worker name, report, diff, commands)}, {part: note for the planner})."""
         results, errors, finals = {}, [], {}
 
         def work(b: int, bucket: list) -> None:
@@ -758,15 +863,15 @@ class TeamMode(DualMode):
                 text = f"TASK (the whole job):\n{task}\n\nYOUR PART ({part.get('title', '')}):\n{part['instructions']}{where}"
                 try:
                     report = worker.send(with_attachments(self.sdk, text, attachments if n == 0 else ()))
-                    diff = worker.last_diff
+                    diff, commands = worker.last_diff, list(worker.last_commands)
                     if tree:  # git's exact diff for this part, from the worker's own copy
                         self._fix_permissions(tree.path)  # git must be able to read what the worker wrote
                         now = tree.tree()
                         diff, before = (tree.diff(now, before) or diff), (now or before)
-                    results[i] = (worker.name, report, diff)
+                    results[i] = (worker.name, report, diff, commands)
                 except Exception as e:  # reported to the planner, never lost
                     errors.append(f"{worker.name}, part {i + 1}: {e}")
-                    results[i] = (worker.name, f"[failed: {e}]", "")
+                    results[i] = (worker.name, f"[failed: {e}]", "", [])
             if tree:
                 self._fix_permissions(tree.path)
                 finals[b] = tree.tree()

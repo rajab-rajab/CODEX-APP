@@ -615,6 +615,9 @@ class App:
         helpers = getattr(self.mode, "helpers", None)
         if helpers is not None:
             helpers.clear()  # browser checks of earlier tasks
+        for attr in ("review_outcome", "before_review_tree"):  # dual/team: set again by this task
+            if hasattr(self.mode, attr):
+                setattr(self.mode, attr, None)
         step_marks = {id(a): len(a.steps) for a in self.mode.agents()}
         started = time.monotonic()
         used_before = costs.snapshot(self.mode.agents())
@@ -1417,7 +1420,11 @@ class App:
                 "seconds": run.get("seconds"), "app_version": __version__,
                 "before_tree": point.get("tree"),
                 "subagents": sum(len(a.subagents) for a in self.mode.agents()),
-                "steps": steps, "agents": agents}
+                "steps": steps, "agents": agents,
+                # dual/team: how the planner's review went (skipped, approved, changes needed, no verdict),
+                # and the project before it, as a git tree (the benchmark tests that too)
+                "review": getattr(self.mode, "review_outcome", None),
+                "before_review_tree": getattr(self.mode, "before_review_tree", None)}
 
     def export(self, arg: str = "") -> None:
         """/export [file]: this conversation as a Markdown file."""

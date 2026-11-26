@@ -2,6 +2,20 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Dual and team mode cost less: the planner reviews only when it's worth it.** With
+  `CODEX_APP_PLANNER_REVIEW=auto` (the default) the review is skipped when the worker's own tests passed
+  and the change is small (200 changed lines or fewer, `CODEX_APP_REVIEW_MAX_LINES`). It still runs when
+  tests failed or weren't run, for bigger changes and web pages, and in team mode whenever several
+  workers' parts were merged. `always` reviews every change, `never` turns it off.
+- **The planner gets the worker's test results** (commands, exit codes, the end of the output) and no
+  longer runs the same tests again.
+- **The review runs one effort level below the plan** (`high` -> `medium`; `CODEX_APP_REVIEW_EFFORT`).
+- `--json` says how the review went (`review`) and gives the project before it (`before_review_tree`).
+  The benchmark report adds "Did the review help?": the hidden tests also run on the project before the
+  review, so it counts the runs the review rescued or broke.
+
 ## 1.19.0 (2026-11-26)
 
 - **Tokens per agent and per step.** `--json` now has `steps` (every turn of the task: plan, work,

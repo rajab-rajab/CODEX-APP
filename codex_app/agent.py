@@ -200,6 +200,7 @@ def format_plan(payload) -> str:
     return "\n".join(lines)
 
 
+COMMAND_TAIL_LINES, COMMAND_TAIL_CHARS = 25, 3_000  # how much of each command's output last_commands keeps
 _STEP_ORDER = itertools.count()  # the order turns ended in, across agents working side by side
 
 
@@ -247,6 +248,9 @@ class CodexAgent:
         # plan, work, review, fix, ...), its tokens, tool calls and time. Oldest first; never cleared.
         self.step = ""
         self.steps: list[dict] = []
+        # The commands of the last turn: {"command", "exit_code", "output" (its end)}, so dual and team mode
+        # can tell the planner what the worker's tests showed instead of having it run them again.
+        self.last_commands: list[dict] = []
 
     # --- thread lifecycle ----------------------------------------------------------------------
 
@@ -510,6 +514,7 @@ class CodexAgent:
         answers, status, error, streamed = [], None, None, False
         self.last_status = self.last_failure = None
         self.last_diff = ""
+        self.last_commands = []
         guarded = False
         self._turn_subagents, self._last_wait = set(), None
         before = (self.usage.input, self.usage.cached, self.usage.output, self.usage.reasoning)
@@ -616,6 +621,9 @@ class CodexAgent:
                 line = "did not run" + (f": {_short(out[-1], 120)}" if out else "")
                 self._emit("tool_error", line)
                 return
+            tail = "\n".join(out[-COMMAND_TAIL_LINES:])
+            self.last_commands.append({"command": str(getattr(item, "command", "") or ""), "exit_code": code,
+                                       "output": tail[-COMMAND_TAIL_CHARS:]})
             line = f"exit code {code}" + (f": {_short(out[-1], 120)}" if out else "")
             self._emit("tool_error" if code not in (0, None) else "tool_result", line)
         elif kind == "fileChange":
