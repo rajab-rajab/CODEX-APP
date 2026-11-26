@@ -113,7 +113,7 @@ def test_notes_from_an_answer_are_kept_and_used_next_time(tmp_path, capsys):
 def test_every_agent_in_dual_mode_can_add_notes(tmp_path, capsys):
     app = make_app(tmp_path, {1: [answer("plan"), answer("ok\nVERDICT: APPROVED\nREMEMBER: The planner noted this.")],
                               2: [answer("did it\nREMEMBER EVERYWHERE: The user wants short answers.")]},
-                   mode="dual", structured_verdicts=False)
+                   mode="dual", structured_verdicts=False, fresh_review=False)
     app.run_task("change it")
     project, everywhere = memory.notes(tmp_path)
     assert [n["text"] for n in project] == ["The planner noted this."]

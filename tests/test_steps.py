@@ -58,15 +58,17 @@ def test_a_new_thread_counts_from_zero(tmp_path):
 
 
 def test_dual_mode_names_its_steps(tmp_path):
-    codex = FakeCodex({1: [answer("plan", usage=(100, 0, 10)),
-                           answer("VERDICT: CHANGES_NEEDED\n- add a test", usage=(300, 50, 30)),
-                           answer("VERDICT: APPROVED", usage=(600, 150, 40))],
-                       2: [answer("did it", usage=(200, 0, 20)), answer("added test", usage=(500, 100, 60))]})
+    codex = FakeCodex({1: [answer("plan", usage=(100, 0, 10))],
+                       2: [answer("did it", usage=(200, 0, 20)), answer("added test", usage=(500, 100, 60))],
+                       3: [answer("VERDICT: CHANGES_NEEDED\n- add a test", usage=(300, 50, 30)),
+                           answer("VERDICT: APPROVED", usage=(600, 150, 40))]})
     mode = DualMode(codex, sdk, tmp_path, Settings())
     mode.run("task")
-    assert [s["step"] for s in mode.planner.steps] == ["plan", "review", "review"]
+    assert [s["step"] for s in mode.planner.steps] == ["plan"]
     assert [s["step"] for s in mode.worker.steps] == ["work", "fix"]
     assert [tokens(s) for s in mode.worker.steps] == [(200, 0, 20), (300, 100, 40)]
+    [reviewer] = mode.helpers  # the review's own conversation
+    assert reviewer.name == "reviewer" and [s["step"] for s in reviewer.steps] == ["review", "review"]
 
 
 def make_app(root, script, mode="single", **settings):
@@ -76,20 +78,22 @@ def make_app(root, script, mode="single", **settings):
 
 def test_json_result_has_steps_and_agents(tmp_path):
     config.PRICES["gpt-6.2-astra"] = (2.0, 0.5, 10.0)
-    app = make_app(tmp_path, {1: [answer("1. plan", usage=(1000, 0, 100)),
-                                  answer("VERDICT: APPROVED", usage=(3000, 1000, 150))],
-                              2: [answer("done", usage=(2000, 500, 200))]}, mode="dual")
+    app = make_app(tmp_path, {1: [answer("1. plan", usage=(1000, 0, 100))],
+                              2: [answer("done", usage=(2000, 500, 200))],
+                              3: [answer("VERDICT: APPROVED", usage=(3000, 1000, 150))]}, mode="dual")
     app.run_task("fix the failing test in calc.py")
     result = app.result()
     json.dumps(result)  # plain JSON
     assert [(s["agent"], s["step"]) for s in result["steps"]] == [("planner", "plan"), ("worker", "work"),
-                                                                  ("planner", "review")]
+                                                                  ("reviewer", "review")]
     plan = result["steps"][0]
     assert tokens(plan) == (1000, 0, 100) and plan["cost_usd"] == round((1000 * 2 + 100 * 10) / 1e6, 6)
     assert "cost_usd" not in result["steps"][1]  # the worker's model has no price
     assert "at" not in plan
-    planner = result["agents"]["planner"]
-    assert planner["turns"] == 2 and (planner["input"], planner["cached"], planner["output"]) == (3000, 1000, 150)
+    reviewer = result["agents"]["reviewer"]
+    assert result["agents"]["planner"]["turns"] == 1 and reviewer["model"] == Settings().planner_model
+    assert (reviewer["input"], reviewer["cached"], reviewer["output"]) == (3000, 1000, 150)
+    assert result["steps"][2]["cost_usd"] == round((2000 * 2 + 1000 * 0.5 + 150 * 10) / 1e6, 6)
     assert result["agents"]["worker"]["model"] == Settings().worker_model
 
 

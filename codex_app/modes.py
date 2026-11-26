@@ -92,6 +92,28 @@ You are the WORKER in a two-model coding team. A PLANNER model gives you a plan 
 - Finish with a report: files changed, commands run with their results, any change from the plan,
   anything unfinished."""
 
+REVIEWER_INSTRUCTIONS = """\
+You are the REVIEWER in a coding team. A PLANNER wrote a plan and one or more WORKERS with write access
+carried it out; you check the result. Your sandbox is read-only: you can read files and run commands that
+change nothing (such as tests), but you cannot edit files.
+{rules}
+
+You get the TASK, the PLAN, the WORKER'S REPORT, THE WORKER'S CHANGES (the exact diff Codex recorded) and
+THE WORKER'S TEST RUNS (the test commands Codex recorded, their exit codes and the end of their output).
+- Check that the changes do what the task asks, and nothing they shouldn't. Skip style nitpicks.
+- Review the diff rather than re-reading whole files; open a file only where you need more context, or
+  when the diff was cut short.
+- Don't run the same tests again. Run tests only when there are none, they failed, their output looks
+  wrong, or they don't cover the change. When several workers' parts were merged, run the tests once on
+  the merged project.
+- A part marked NOT MERGED is not in the project folder: ask for it to be redone in your fixes.
+- A BROWSER CHECK, when there is one, is what a separate checker saw when it opened the changed pages in a
+  real browser. Weigh it like a test result.
+- End with exactly one of these lines:
+  VERDICT: APPROVED
+  VERDICT: CHANGES_NEEDED
+  After CHANGES_NEEDED, list the concrete fixes the worker must make."""
+
 INIT_TASK = """\
 Look through this project (its layout, main files, how it is built, run and tested) and write an
 AGENTS.md file in the project root for future coding sessions. Keep it short and specific to this
@@ -373,6 +395,11 @@ TEST_COMMAND = re.compile(
 TEST_OUTPUT_LIMIT = 6_000  # characters of the worker's test output given to the planner
 
 
+def _short_command(command, limit: int = 60) -> str:
+    command = " ".join(str(command).split())
+    return command if len(command) <= limit else command[:limit - 3] + "..."
+
+
 def test_runs(commands) -> list:
     """The commands among `commands` (agent.last_commands) that ran tests."""
     return [c for c in commands or [] if TEST_COMMAND.search(str(c.get("command", "")))]
@@ -451,13 +478,28 @@ class DualMode(_Mode):
         for worker in self.workers():  # the planner stays read-only
             worker.set_sandbox(sandbox_for(permission, self.sdk))
 
+    def _make_reviewer(self) -> CodexAgent:
+        """A fresh, read-only conversation for one task's review: it gets only the task, the plan, the diff and
+        the test runs. The planner's own conversation holds everything it read while planning; by the time the
+        worker is done, OpenAI's cache of it has usually expired, so a review there pays for all of it again."""
+        s = self.settings
+        reviewer = _agent(self.codex, self.sdk, s, name="reviewer", model=s.review_model or s.planner_model,
+                          effort=s.review_effort_now(), sandbox=self.sdk.Sandbox.read_only,
+                          instructions=REVIEWER_INSTRUCTIONS.format(rules=_SHARED_RULES), cwd=self.root,
+                          on_event=self.on_event, ephemeral=True, browser=False, notes=False)
+        reviewer.step = "review"
+        self.helpers.append(reviewer)  # its tokens count in the task's totals
+        return reviewer
+
     def review(self, message: str) -> tuple:
-        """Ask the planner for its verdict. (verdict or None, the review as text)."""
-        self.planner.step = "review"
+        """Ask for the verdict: the task's fresh reviewer when there is one, else the planner. (verdict or
+        None, the review as text)."""
+        judge = getattr(self, "_reviewer", None) or self.planner
+        judge.step = "review"
         effort = self.settings.review_effort_now()
         if self.settings.structured_verdicts:
             try:
-                raw = self.planner.send(message + "\n\nGive your verdict in the JSON form your output schema asks for.",
+                raw = judge.send(message + "\n\nGive your verdict in the JSON form your output schema asks for.",
                                         output_schema=VERDICT_SCHEMA, effort=effort)
             except self.sdk.CodexError as e:
                 self.settings.structured_verdicts = False  # this engine or model can't: use text from now on
@@ -469,9 +511,9 @@ class DualMode(_Mode):
                     verdict = data["verdict"]
                 except (ValueError, KeyError, TypeError):
                     text, verdict = raw, parse_verdict(raw)  # it answered in text after all
-                self.on_event(self.planner.name, "text", text)
+                self.on_event(judge.name, "text", text)
                 return verdict, text
-        review = self.planner.send(message, effort=effort)
+        review = judge.send(message, effort=effort)
         return parse_verdict(review), review
 
     def _review_loop(self, report: str, diff_text: str, fix_worker: CodexAgent, commands=(), raw_diff: str = "",
@@ -480,17 +522,37 @@ class DualMode(_Mode):
         review when skip_review says so, and then the worker's report is the answer.
         commands, raw_diff: what the worker ran and changed, for that decision. tests: the worker's test runs
         for the planner. must_review: why the planner reviews even when reviews are off ("" if no reason)."""
+        # Files a worker's commands wrote can be locked to Codex's sandbox, and git (the record below, and
+        # the benchmark's check of it) can't read them: give them back first (see perms.py).
+        self._fix_permissions(self.root)
         try:
             self.before_review_tree = undo.snapshot(self.root)  # the benchmark tests this too: did the review help?
         except Exception:
             self.before_review_tree = None
         if not must_review and report.startswith(("[Codex could not finish", "[Stopped")):
             must_review = "the worker didn't finish"
-        why = self.skip_review(commands, raw_diff, must_review)
-        if why:
+        skip, self.review_reason = self.review_decision(commands, raw_diff, must_review)
+        if skip:
             self.review_outcome = "skipped"
-            self._notice(f"Planner review skipped: {why}. CODEX_APP_PLANNER_REVIEW=always reviews every change.")
+            self._notice(f"Planner review skipped: {self.review_reason}. CODEX_APP_PLANNER_REVIEW=always reviews "
+                         "every change.")
             return report
+        self._reviewer = self._make_reviewer() if self.settings.fresh_review else None
+        try:
+            return self._review_rounds(report, diff_text, fix_worker, tests)
+        finally:
+            if self._reviewer is not None:
+                self._reviewer.discard()  # kept out of Codex's history; its tokens are counted already
+            self._reviewer = None
+
+    def _context_for_review(self) -> str:
+        """What a fresh reviewer needs before the worker's report: the task and the plan."""
+        if getattr(self, "_reviewer", None) is None:
+            return ""  # the planner knows both already
+        plan = getattr(self, "_plan", "") or "(no separate plan)"
+        return f"TASK:\n{getattr(self, '_task', '')}\n\nTHE PLAN THE WORKER FOLLOWED:\n{plan}\n\n"
+
+    def _review_rounds(self, report: str, diff_text: str, fix_worker: CodexAgent, tests: str) -> str:
         review = ""
         for round_number in range(self.max_review_rounds + 1):
             if round_number:
@@ -501,8 +563,13 @@ class DualMode(_Mode):
                 diff_text = changes_for_review(fix_worker.last_diff)
                 tests = test_report(fix_worker.last_commands, "THE WORKER'S TEST RUNS (in this fix)")
             seen = self.browser_check(report, diff_text, fix_worker.last_diff if round_number else "")
-            self._notice("Planner is checking the work.")
-            verdict, review = self.review(f"WORKER'S REPORT:\n{report}\n\n{diff_text}"
+            if round_number:
+                self._notice("Checking the fixes.")
+            else:
+                self._notice(f"{'A reviewer' if self._reviewer else 'The planner'} is checking the work: "
+                             f"{self.review_reason}.")
+            verdict, review = self.review((self._context_for_review() if not round_number else "")
+                                          + f"WORKER'S REPORT:\n{report}\n\n{diff_text}"
                                           + (f"\n\n{tests}" if tests else "") + f"{seen}\n\n"
                                           "Check the work and give your verdict.")
             if verdict == "APPROVED":
@@ -518,26 +585,53 @@ class DualMode(_Mode):
         return review
 
     def skip_review(self, commands, raw_diff: str, must_review: str = ""):
-        """Why the planner needn't review this work, or None when it should. A review re-reads the change
-        on the planner's (dearer) model; when the worker's own tests passed on a small change it rarely
-        finds anything (see the benchmark), so "auto" skips it then."""
-        choice = self.settings.planner_review
+        """Why the review can be skipped, or None when it must run."""
+        skip, why = self.review_decision(commands, raw_diff, must_review)
+        return why if skip else None
+
+    def review_decision(self, commands, raw_diff: str, must_review: str = "") -> tuple:
+        """(skip, why): whether the review can be skipped, and the reason either way (shown, and in --json as
+        review_reason, so a benchmark says why each review ran). A review re-reads the change on the
+        planner's (dearer) model; when the worker's own tests passed on a small change it rarely finds
+        anything, so "auto" skips it then."""
+        choice, s = self.settings.planner_review, self.settings
         if choice == "always":
-            return None
+            return False, "reviews are always on (CODEX_APP_PLANNER_REVIEW=always)"
         if must_review:
             if choice == "never":
                 self._notice(f"The planner reviews anyway: {must_review}.")
-            return None
+            return False, must_review
         if choice == "never":
-            return "the planner's review is off (CODEX_APP_PLANNER_REVIEW=never)"
-        if not (raw_diff or "").strip() or not tests_passed(commands):
-            return None  # nothing changed (did the worker do it?), or no passing tests: review it
+            return True, "the planner's review is off (CODEX_APP_PLANNER_REVIEW=never)"
+        if not (raw_diff or "").strip():
+            return False, "Codex recorded no file changes by the worker"
+        runs = test_runs(commands)
+        if not runs:
+            others = [_short_command(c.get("command", "")) for c in commands or []][-3:]
+            return False, ("the worker ran no test command Codex App recognises"
+                           + (f" (its last commands: {'; '.join(others)})" if others else " (it ran no commands)"))
+        if runs[-1].get("exit_code") != 0:
+            return False, (f"the worker's last test command failed (exit code {runs[-1].get('exit_code')}: "
+                           f"{_short_command(runs[-1].get('command', ''))})")
         lines = changed_lines(raw_diff)
-        if lines > self.settings.review_max_lines or self._web_change(raw_diff):
-            return None
-        last = str(test_runs(commands)[-1].get("command", "")).strip()
-        last = last if len(last) <= 60 else last[:57] + "..."
-        return f"the worker's tests passed ({last}) and the change is small ({lines} changed lines)"
+        if lines > s.review_max_lines:
+            return False, f"the change is {lines} changed lines, more than {s.review_max_lines}"
+        if self._web_change(raw_diff):
+            return False, "the change touches web pages, which the browser check looks at"
+        return True, (f"the worker's tests passed ({_short_command(runs[-1].get('command', ''))}) and the change "
+                      f"is small ({lines} changed lines)")
+
+    def _fix_permissions(self, folder) -> None:
+        """Windows: files the sandbox wrote in a worktree can be unreadable to git, which then can't merge
+        them; give them back first (see perms.py)."""
+        if not self.settings.fix_permissions or not perms.applies():
+            return
+        try:
+            fixed, left = perms.check_and_repair(folder)
+        except Exception:
+            return
+        if left:
+            self._notice(f"Some files a worker wrote can't be read, so they may not be merged: {', '.join(left[:5])}")
 
     def _web_change(self, *diffs: str) -> bool:
         """True when the browser check would look at these changes, so the review must run."""
@@ -547,7 +641,9 @@ class DualMode(_Mode):
     def _begin(self, task: str) -> None:
         self._task = task  # for the browser check
         self.review_outcome = None      # skipped, approved, changes needed, no verdict (for --json)
+        self.review_reason = None       # why the review ran or was skipped (for --json)
         self.before_review_tree = None  # the project before the review (for the benchmark)
+        self._plan = ""                 # the plan, for a fresh reviewer
 
     def browser_check(self, *diffs: str) -> str:
         """When the changes touch web pages: what a separate checker saw in a real browser, as a BROWSER CHECK
@@ -598,6 +694,7 @@ class DualMode(_Mode):
         plan = self.planner.send(with_attachments(self.sdk, f"TASK:\n{task}", attachments))
         if _NO_PLAN.search(plan):
             return plan  # a question: the planner answered it, nothing to build
+        self._plan = plan
 
         self._notice("Worker is carrying out the plan.")
         self.worker.step = "work"
@@ -614,9 +711,15 @@ class DualMode(_Mode):
         self._notice(f"{worker.name.capitalize()} is working on the goal on its own; the planner checks it at the end.")
         report = worker.run_goal(objective, token_budget)
         self._notice("Planner is checking the work.")
-        verdict, review = self.review(
-            f"GOAL:\n{objective}\n\nWORKER'S REPORT:\n{report}\n\nTHE WORKER'S CHANGES: this goal took several "
-            "turns, so check the files yourself (git diff, and run the tests).\n\nCheck the work and give your verdict.")
+        self._reviewer = self._make_reviewer() if self.settings.fresh_review else None
+        try:
+            verdict, review = self.review(
+                f"GOAL:\n{objective}\n\nWORKER'S REPORT:\n{report}\n\nTHE WORKER'S CHANGES: this goal took several "
+                "turns, so check the files yourself (git diff, and run the tests).\n\nCheck the work and give your verdict.")
+        finally:
+            if self._reviewer is not None:
+                self._reviewer.discard()
+            self._reviewer = None
         self._notice("Planner approved the work." if verdict == "APPROVED"
                      else "The planner asks for changes: send them as a new message, or start /goal again.")
         return review
@@ -768,6 +871,9 @@ class TeamMode(DualMode):
             return overview or raw
         if overview:
             self.on_event(self.planner.name, "text", overview)
+        self._plan = "\n\n".join([overview] + [f"Part {i + 1} ({p.get('title', '')}; files: "
+                                              f"{', '.join(p.get('files') or []) or 'not listed'}):\n{p['instructions']}"
+                                              for i, p in enumerate(parts)]).strip()
 
         buckets = group_parts(parts, self.team_size)
         for b, bucket in enumerate(buckets):
@@ -825,18 +931,6 @@ class TeamMode(DualMode):
         self._notice(f"Each worker has its own copy of the project (a git worktree); their changes are merged "
                      f"into {self.root} when they are done.")
         return made
-
-    def _fix_permissions(self, folder) -> None:
-        """Windows: files the sandbox wrote in a worktree can be unreadable to git, which then can't merge
-        them; give them back first (see perms.py)."""
-        if not self.settings.fix_permissions or not perms.applies():
-            return
-        try:
-            fixed, left = perms.check_and_repair(folder)
-        except Exception:
-            return
-        if left:
-            self._notice(f"Some files a worker wrote can't be read, so they may not be merged: {', '.join(left[:5])}")
 
     def _close_worktrees(self, trees: list) -> None:
         for b, tree in enumerate(trees):

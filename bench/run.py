@@ -173,7 +173,8 @@ def run_one(name: str, data: dict, folder: Path, mode: str, repeat: int, work: P
             "output_tokens": sum(t.get("output", 0) for t in tokens.values()),
             "cost_usd": result.get("cost_usd"), "models": sorted(tokens),
             "by_step": by_step(result.get("steps") or []), "agents": result.get("agents") or {},
-            "review": result.get("review"), "passed_before_review": before,
+            "review": result.get("review"), "review_reason": result.get("review_reason"),
+            "passed_before_review": before,
             "files_changed": [f["path"] for f in result.get("files_changed") or []],
             "hidden_tests": tests if not passed else ""}
 
@@ -226,16 +227,17 @@ def review_rows(runs: list, modes) -> list:
     after it, rescued (failed before, passed after) and broken (passed before, failed after)."""
     rows = []
     for mode in modes:
-        mine = [r for r in runs if r["mode"] == mode and r.get("passed_before_review") is not None]
+        mine = [r for r in runs if r["mode"] == mode and r.get("review")]
         if not mine:
             continue
         rows.append({"mode": mode, "runs": len(mine),
+                     "not_checked": sum(r.get("passed_before_review") is None for r in mine),
                      "reviewed": sum(r.get("review") not in (None, "skipped") for r in mine),
                      "skipped": sum(r.get("review") == "skipped" for r in mine),
                      "passed_before": sum(bool(r["passed_before_review"]) for r in mine),
                      "passed_after": sum(bool(r["passed"]) for r in mine),
-                     "rescued": sum(r["passed"] and not r["passed_before_review"] for r in mine),
-                     "broken": sum(r["passed_before_review"] and not r["passed"] for r in mine)})
+                     "rescued": sum(r["passed"] and r.get("passed_before_review") is False for r in mine),
+                     "broken": sum(bool(r.get("passed_before_review")) and not r["passed"] for r in mine)})
     return rows
 
 
@@ -285,12 +287,18 @@ def markdown(runs: list, rows: list, tasks: list, when: str, app_version: str) -
     reviews = review_rows(runs, [r["mode"] for r in rows])
     if reviews:
         out += ["", "## Did the review help?", "", "The hidden tests also run on the project as it was before the "
-                "planner's review. Rescued: failed before the review, passed after it. Broken: the other way.", "",
-                "| Mode | Runs | Reviewed | Skipped | Passed before review | Passed after | Rescued | Broken |",
-                "|---|---|---|---|---|---|---|---|"]
+                "planner's review. Rescued: failed before the review, passed after it. Broken: the other way. "
+                "Not checked: the project before the review couldn't be recorded.", "",
+                "| Mode | Runs | Reviewed | Skipped | Passed before review | Passed after | Rescued | Broken | Not checked |",
+                "|---|---|---|---|---|---|---|---|---|"]
         for r in reviews:
             out.append(f"| {r['mode']} | {r['runs']} | {r['reviewed']} | {r['skipped']} | {r['passed_before']} | "
-                       f"{r['passed_after']} | {r['rescued']} | {r['broken']} |")
+                       f"{r['passed_after']} | {r['rescued']} | {r['broken']} | {r['not_checked']} |")
+        reasons = [r for r in runs if r.get("review_reason")]
+        if reasons:
+            out += ["", "Why each review ran or was skipped:", ""]
+            out += [f"- {r['task']} ({r['mode']}, run {r['repeat']}): {r['review']}, {r['review_reason']}"
+                    for r in reasons]
     failed = [r for r in runs if not r["passed"]]
     if failed:
         out += ["", "## Failed runs", ""]

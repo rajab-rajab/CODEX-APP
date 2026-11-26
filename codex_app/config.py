@@ -84,6 +84,8 @@ class Settings:
     planner_review: str = "auto"
     review_max_lines: int = 200
     review_effort: str = ""        # the review's effort; "" = one level below the planner's, at least medium
+    review_model: str = ""         # the review's model; "" = the planner's
+    fresh_review: bool = True      # review in a fresh, small conversation, not the planner's long one
     update_check: bool = True      # look for a new app version once a day at start
     web_search: bool = False       # let Codex search the web live (official Codex: --search)
 
@@ -126,6 +128,8 @@ class Settings:
         s.planner_review = review_name(_env("CODEX_APP_PLANNER_REVIEW", s.planner_review))
         s.review_max_lines = _env_int("CODEX_APP_REVIEW_MAX_LINES", s.review_max_lines)
         s.review_effort = _env("CODEX_APP_REVIEW_EFFORT", s.review_effort)
+        s.review_model = _env("CODEX_APP_REVIEW_MODEL", s.review_model)
+        s.fresh_review = _env_bool("CODEX_APP_FRESH_REVIEW", s.fresh_review)
         s.update_check = _env_bool("CODEX_APP_UPDATE_CHECK", s.update_check)
         s.web_search = _env_bool("CODEX_APP_SEARCH", s.web_search)
         s.profile = _env("CODEX_APP_PROFILE", s.profile)

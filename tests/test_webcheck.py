@@ -109,7 +109,7 @@ def test_a_web_change_is_looked_at_before_the_verdict(tmp_path):
                            answer(json.dumps({"verdict": "APPROVED", "summary": "ok", "fixes": []}))],
                        2: [worker_turn(diff), worker_turn(diff)], 3: [answer(CHECK)], 4: [answer(CHECK)]})
     events = []
-    mode = DualMode(codex, sdk, tmp_path, Settings(max_review_rounds=1), on_event=lambda a, k, t: events.append((a, k, t)))
+    mode = DualMode(codex, sdk, tmp_path, Settings(fresh_review=False, max_review_rounds=1), on_event=lambda a, k, t: events.append((a, k, t)))
     mode.run("make the heading red")
 
     check = codex.started[2]
@@ -128,8 +128,8 @@ def test_a_web_change_is_looked_at_before_the_verdict(tmp_path):
 
 def test_no_check_for_other_changes_or_when_off(tmp_path):
     site(tmp_path)
-    for settings, diff in ((Settings(), "--- a/app.py\n+++ b/app.py\n"),
-                           (Settings(browser_check=False), "--- a/index.html\n+++ b/index.html\n")):
+    for settings, diff in ((Settings(fresh_review=False), "--- a/app.py\n+++ b/app.py\n"),
+                           (Settings(browser_check=False, fresh_review=False), "--- a/index.html\n+++ b/index.html\n")):
         codex = FakeCodex({1: [answer("plan"), answer(json.dumps({"verdict": "APPROVED", "summary": "ok",
                                                                    "fixes": []}))],
                            2: [worker_turn(diff)]})
@@ -144,7 +144,7 @@ def test_no_playwright_means_no_check_and_one_notice(tmp_path, monkeypatch):
     notices = []
     codex = FakeCodex({1: [answer("plan"), answer(json.dumps({"verdict": "APPROVED", "summary": "ok", "fixes": []}))],
                        2: [worker_turn(diff)]})
-    DualMode(codex, sdk, tmp_path, Settings(), on_event=lambda a, k, t: k == "notice" and notices.append(t)).run("x")
+    DualMode(codex, sdk, tmp_path, Settings(fresh_review=False), on_event=lambda a, k, t: k == "notice" and notices.append(t)).run("x")
     assert len(codex.started) == 2 and sum("No browser check" in n for n in notices) == 1
 
 
@@ -152,7 +152,7 @@ def test_a_dev_server_address_is_used_instead_of_the_folder(tmp_path):
     diff = "--- a/src/App.tsx\n+++ b/src/App.tsx\n"
     codex = FakeCodex({1: [answer("plan"), answer(json.dumps({"verdict": "APPROVED", "summary": "ok", "fixes": []}))],
                        2: [worker_turn(diff)], 3: [answer(CHECK)]})
-    DualMode(codex, sdk, tmp_path, Settings(check_url="http://localhost:5173")).run("x")
+    DualMode(codex, sdk, tmp_path, Settings(fresh_review=False, check_url="http://localhost:5173")).run("x")
     asked = next(t["text"] for t in codex.turns if t["thread"] == "thr_3")
     assert "dev server runs at http://localhost:5173" in asked and "127.0.0.1:" not in asked
 
@@ -170,7 +170,7 @@ def test_a_failed_check_is_reported_not_fatal(tmp_path):
             return thread
     codex = Broken({1: [answer("plan"), answer(json.dumps({"verdict": "APPROVED", "summary": "ok", "fixes": []}))],
                     2: [worker_turn("--- a/index.html\n+++ b/index.html\n")]})
-    assert "ok" in DualMode(codex, sdk, tmp_path, Settings()).run("x")
+    assert "ok" in DualMode(codex, sdk, tmp_path, Settings(fresh_review=False)).run("x")
     assert "COULD NOT CHECK" in codex.turns[-1]["text"] and "didn't start" in codex.turns[-1]["text"]
 
 

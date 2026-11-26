@@ -615,7 +615,7 @@ class App:
         helpers = getattr(self.mode, "helpers", None)
         if helpers is not None:
             helpers.clear()  # browser checks of earlier tasks
-        for attr in ("review_outcome", "before_review_tree"):  # dual/team: set again by this task
+        for attr in ("review_outcome", "review_reason", "before_review_tree"):  # dual/team: set again by this task
             if hasattr(self.mode, attr):
                 setattr(self.mode, attr, None)
         step_marks = {id(a): len(a.steps) for a in self.mode.agents()}
@@ -1424,6 +1424,7 @@ class App:
                 # dual/team: how the planner's review went (skipped, approved, changes needed, no verdict),
                 # and the project before it, as a git tree (the benchmark tests that too)
                 "review": getattr(self.mode, "review_outcome", None),
+                "review_reason": getattr(self.mode, "review_reason", None),
                 "before_review_tree": getattr(self.mode, "before_review_tree", None)}
 
     def export(self, arg: str = "") -> None:
