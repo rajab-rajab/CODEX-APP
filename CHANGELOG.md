@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.20.0 (2026-11-26)
 
 - **Dual and team mode cost less: the planner reviews only when it's worth it.** With
   `CODEX_APP_PLANNER_REVIEW=auto` (the default) the review is skipped when the worker's own tests passed
