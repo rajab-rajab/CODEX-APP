@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.19.0 (2026-11-26)
 
 - **Tokens per agent and per step.** `--json` now has `steps` (every turn of the task: plan, work,
   review, fix, browser check, ..., with its tokens, cached input, output, reasoning, tool calls, time and
