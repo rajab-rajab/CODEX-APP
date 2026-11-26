@@ -225,6 +225,26 @@ def conversation_title(thread) -> str:
     return " ".join(text.split())
 
 
+def step_report(steps: list) -> tuple[list, dict]:
+    """(steps, agents) for --json: every turn of the task with its step (plan, work, review, fix, ...) and
+    cost where the model has a price, then the totals of each agent."""
+    out, agents = [], {}
+    for s in steps:
+        s = dict(s)
+        price = costs.cost_of(s["model"], s["input"], s["cached"], s["output"])
+        if price is not None:
+            s["cost_usd"] = round(price, 6)
+        out.append(s)
+        a = agents.setdefault(s["agent"], {"model": s["model"], "turns": 0, "input": 0, "cached": 0, "output": 0,
+                                           "reasoning": 0, "tool_calls": 0, "seconds": 0.0})
+        a["model"] = s["model"]
+        a["turns"] += 1
+        for key in ("input", "cached", "output", "reasoning", "tool_calls"):
+            a[key] += s[key]
+        a["seconds"] = round(a["seconds"] + s["seconds"], 1)
+    return out, agents
+
+
 def review_target(words: list, arg: str) -> dict:
     """The target for Codex's own review, from /review's words (the same four presets as official Codex)."""
     if not words or words[0] == "uncommitted":
@@ -592,6 +612,10 @@ class App:
         self._heard = []  # this task's answers, for memory notes
         point = {"mode": self.mode, "title": self._last_message, "tree": undo.snapshot(self.root),
                  "marks": {a.name: len(a.turns_log) for a in self.mode.agents()}}
+        helpers = getattr(self.mode, "helpers", None)
+        if helpers is not None:
+            helpers.clear()  # browser checks of earlier tasks
+        step_marks = {id(a): len(a.steps) for a in self.mode.agents()}
         started = time.monotonic()
         used_before = costs.snapshot(self.mode.agents())
         answer, error = "", None
@@ -615,8 +639,11 @@ class App:
             if error != "stopped":
                 self.remember()
             self._heard = []
-            used = costs.record(used_before, self.mode.agents(), self.root, self.mode.name)
-            self.last_run = {"answer": answer, "error": error, "point": point, "used": used,
+            everyone = self.mode.all_agents() if hasattr(self.mode, "all_agents") else self.mode.agents()
+            used = costs.record(used_before, everyone, self.root, self.mode.name)
+            steps = sorted((dict(s) for a in everyone for s in a.steps[step_marks.get(id(a), 0):]),
+                           key=lambda s: s.pop("at", 0))
+            self.last_run = {"answer": answer, "error": error, "point": point, "used": used, "steps": steps,
                              "seconds": round(time.monotonic() - started, 1)}
         self.status_line()
         self.check_limits()
@@ -1383,12 +1410,14 @@ class App:
               and not answer.startswith(("[Codex could not finish", "[Stopped")))
         tokens = {model: {"input": i, "cached": c, "output": o} for model, (i, c, o) in run.get("used", {}).items()}
         cost = [costs.cost_of(m, *v) for m, v in run.get("used", {}).items()]
+        steps, agents = step_report(run.get("steps") or [])
         return {"ok": ok, "answer": answer, "error": run.get("error") or (next(iter(failures.values())) if failures else None),
                 "mode": self.mode.name, "project": str(self.root), "files_changed": files, "tokens": tokens,
                 "cost_usd": None if not cost or None in cost else round(sum(cost), 6),
                 "seconds": run.get("seconds"), "app_version": __version__,
                 "before_tree": point.get("tree"),
-                "subagents": sum(len(a.subagents) for a in self.mode.agents())}
+                "subagents": sum(len(a.subagents) for a in self.mode.agents()),
+                "steps": steps, "agents": agents}
 
     def export(self, arg: str = "") -> None:
         """/export [file]: this conversation as a Markdown file."""

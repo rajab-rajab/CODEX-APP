@@ -153,8 +153,52 @@ def run_one(name: str, data: dict, folder: Path, mode: str, repeat: int, work: P
             "cached_tokens": sum(t.get("cached", 0) for t in tokens.values()),
             "output_tokens": sum(t.get("output", 0) for t in tokens.values()),
             "cost_usd": result.get("cost_usd"), "models": sorted(tokens),
+            "by_step": by_step(result.get("steps") or []), "agents": result.get("agents") or {},
             "files_changed": [f["path"] for f in result.get("files_changed") or []],
             "hidden_tests": tests if not passed else ""}
+
+
+STEP_KEYS = ("turns", "input", "cached", "output", "tool_calls", "seconds")
+
+
+def by_step(steps: list) -> dict:
+    """{step: totals} for one run, from the app's --json "steps" (plan, work, review, fix, ...)."""
+    out: dict = {}
+    for s in steps:
+        t = out.setdefault(s.get("step") or "turn", dict.fromkeys(STEP_KEYS, 0))
+        t["turns"] += 1
+        for key in STEP_KEYS[1:]:
+            t[key] += s.get(key) or 0
+        t["seconds"] = round(t["seconds"], 1)
+        if "cost_usd" in s:
+            t["cost_usd"] = round(t.get("cost_usd", 0) + s["cost_usd"], 6)
+    return out
+
+
+def step_rows(runs: list, modes) -> list:
+    """Per mode and step, the average per run: turns, tool calls, tokens (and how much of the input was
+    cached), seconds, and the step's share of the mode's tokens. Runs without step data are left out."""
+    rows = []
+    for mode in modes:
+        mine = [r for r in runs if r["mode"] == mode and r.get("by_step")]
+        if not mine:
+            continue
+        sums: dict = {}
+        for r in mine:
+            for step, t in r["by_step"].items():
+                acc = sums.setdefault(step, dict.fromkeys(STEP_KEYS, 0))
+                for key in STEP_KEYS:
+                    acc[key] += t.get(key, 0)
+        total = sum(t["input"] + t["output"] for t in sums.values()) or 1
+        for step, t in sums.items():
+            n = len(mine)
+            rows.append({"mode": mode, "step": step, "runs": n, "turns": round(t["turns"] / n, 1),
+                         "tool_calls": round(t["tool_calls"] / n, 1),
+                         "tokens": int((t["input"] + t["output"]) / n),
+                         "uncached_input": int((t["input"] - t["cached"]) / n), "output": int(t["output"] / n),
+                         "seconds": round(t["seconds"] / n, 1),
+                         "share": round(100 * (t["input"] + t["output"]) / total)})
+    return rows
 
 
 def summarise(runs: list, modes) -> list:
@@ -191,6 +235,15 @@ def markdown(runs: list, rows: list, tasks: list, when: str, app_version: str) -
             mine = [x for x in runs if x["task"] == name and x["mode"] == r["mode"]]
             cells.append(f"{sum(x['passed'] for x in mine)}/{len(mine)}" if mine else "–")
         out.append(f"| {name} | {data.get('kind', '')} | " + " | ".join(cells) + " |")
+    steps = step_rows(runs, [r["mode"] for r in rows])
+    if steps:
+        out += ["", "## Where the tokens went", "", "Average per run. Tokens count all input (cached too) and output; "
+                "\"uncached\" is the input that isn't cached, which costs the most.", "",
+                "| Mode | Step | Turns | Tool calls | Tokens | Share | Uncached input | Output | Time |",
+                "|---|---|---|---|---|---|---|---|---|"]
+        for r in steps:
+            out.append(f"| {r['mode']} | {r['step']} | {r['turns']} | {r['tool_calls']} | {r['tokens']:,} | "
+                       f"{r['share']}% | {r['uncached_input']:,} | {r['output']:,} | {r['seconds']:.1f} s |")
     failed = [r for r in runs if not r["passed"]]
     if failed:
         out += ["", "## Failed runs", ""]
@@ -271,7 +324,7 @@ def save_results(out: Path, stamp: str, when: str, runs: list, tasks: list, mode
                                        "was stopped, or is still running.\n\n", 1)
     out.mkdir(parents=True, exist_ok=True)
     data = {"when": when, "app_version": app_version(), "planned_runs": total, "complete": len(runs) == total,
-            "summary": rows, "runs": runs}
+            "summary": rows, "steps": step_rows(runs, modes), "runs": runs}
     for suffix, text in ((".json", json.dumps(data, indent=2)), (".md", report)):
         path = out / f"{stamp}{suffix}"
         tmp = path.with_name(path.name + ".tmp")

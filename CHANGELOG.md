@@ -2,6 +2,16 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
+## Unreleased
+
+- **Tokens per agent and per step.** `--json` now has `steps` (every turn of the task: plan, work,
+  review, fix, browser check, ..., with its tokens, cached input, output, reasoning, tool calls, time and
+  cost) and `agents` (the totals of each agent). The benchmark report adds "Where the tokens went": per
+  mode and step, the average tokens, share, uncached input and tool calls per run, so it shows what dual
+  and team mode spend their extra tokens on.
+- The browser check's tokens now count in a task's totals, its cost and `/stats`. They were left out
+  before, because the check runs in a thread of its own.
+
 ## 1.18.1 (2026-11-26)
 
 - Benchmark: results are saved after every run, so a stopped benchmark keeps the runs it finished. Its report

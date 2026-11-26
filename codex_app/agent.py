@@ -4,6 +4,7 @@ Codex itself (github.com/openai/codex) does the work: it reads files, runs comma
 inside its sandbox. This class starts or resumes the thread, sends messages, and turns Codex's
 stream of events into short lines for the screen."""
 
+import itertools
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -199,6 +200,9 @@ def format_plan(payload) -> str:
     return "\n".join(lines)
 
 
+_STEP_ORDER = itertools.count()  # the order turns ended in, across agents working side by side
+
+
 class CodexAgent:
     def __init__(self, codex, *, name: str, model: str, effort: str, sandbox, approval_mode,
                  instructions: str, cwd: Path, on_event: Optional[EventHandler] = None,
@@ -239,6 +243,10 @@ class CodexAgent:
         self._last_wait = None
         self.last_status = None             # how the last turn ended: completed, failed, interrupted
         self.last_failure = None            # why it failed (a codexErrorInfo value), or None
+        # What each turn used, for --json and the benchmark: which step of the work it was (set by the mode:
+        # plan, work, review, fix, ...), its tokens, tool calls and time. Oldest first; never cleared.
+        self.step = ""
+        self.steps: list[dict] = []
 
     # --- thread lifecycle ----------------------------------------------------------------------
 
@@ -504,6 +512,8 @@ class CodexAgent:
         self.last_diff = ""
         guarded = False
         self._turn_subagents, self._last_wait = set(), None
+        before = (self.usage.input, self.usage.cached, self.usage.output, self.usage.reasoning)
+        started_at, tool_calls = time.monotonic(), 0
         for event in stream:
             method = getattr(event, "method", "")
             payload = getattr(event, "payload", None)
@@ -515,6 +525,7 @@ class CodexAgent:
             elif method == "item/started":
                 started = _root(getattr(payload, "item", None))
                 line = _describe_started(started)
+                tool_calls += bool(line)
                 if line and line.startswith("subagent: wait"):
                     if line == self._last_wait:
                         line = None  # Codex is still waiting: once is enough
@@ -543,6 +554,7 @@ class CodexAgent:
                 status = _value(getattr(t, "status", None))
                 error = getattr(t, "error", None)
 
+        self._log_step(before, started_at, tool_calls)
         if self._turn_subagents:
             self._check_subagents(sorted(self._turn_subagents))
         if self.last_diff.strip():
@@ -564,6 +576,18 @@ class CodexAgent:
         if status == "interrupted":
             self._emit("notice", "Stopped.")
         return (answers[-1] if answers else "").strip()
+
+    def _log_step(self, before: tuple, started_at: float, tool_calls: int) -> None:
+        """Add what this turn used to self.steps. Codex reports a thread's running total, so a turn's
+        tokens are the difference; a total lower than before means a new thread, which starts from 0."""
+        after = (self.usage.input, self.usage.cached, self.usage.output, self.usage.reasoning)
+        if any(a < b for a, b in zip(after, before)):
+            before = (0, 0, 0, 0)
+        inp, cached, out, reasoning = (max(0, a - b) for a, b in zip(after, before))
+        self.steps.append({"agent": self.name, "step": self.step or "turn", "model": self.model,
+                           "input": inp, "cached": cached, "output": out, "reasoning": reasoning,
+                           "tool_calls": tool_calls, "seconds": round(time.monotonic() - started_at, 1),
+                           "at": next(_STEP_ORDER)})
 
     def _completed(self, item, answers: list, streamed: bool) -> None:
         kind = getattr(item, "type", "")
