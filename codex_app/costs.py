@@ -67,15 +67,16 @@ def cost_of(model: str, inp: int, cached: int, out: int) -> Optional[float]:
 # --- the usage log -------------------------------------------------------------------------------------
 
 def snapshot(agents) -> dict:
-    """Each agent's token totals per model now, to measure one task by."""
-    return {(a.name, model): list(totals) for a in agents for model, totals in a.usage.by_model.items()}
+    """Each agent's token totals per model now, to measure one task by. Keyed by the agent itself, not its
+    name: two browser checks in one task are both called "browser-check"."""
+    return {(id(a), model): list(totals) for a in agents for model, totals in a.usage.by_model.items()}
 
 
 def record(before: dict, agents, project, mode: str, now: Optional[float] = None) -> dict:
     """Add what the agents used since `before` to the log. Returns {model: [input, cached, output]}."""
     used: dict = {}
-    for (name, model), totals in snapshot(agents).items():
-        start = before.get((name, model), [0, 0, 0])
+    for (agent, model), totals in snapshot(agents).items():
+        start = before.get((agent, model), [0, 0, 0])
         delta = [max(0, t - s) for t, s in zip(totals, start)]
         if any(delta):
             used[model] = [u + d for u, d in zip(used.get(model, [0, 0, 0]), delta)]

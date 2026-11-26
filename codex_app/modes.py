@@ -230,9 +230,14 @@ class _Mode:
         self.root = workspace_root
         self.settings = settings
         self.on_event = on_event or (lambda agent, kind, text: None)
+        self.helpers: list[CodexAgent] = []  # helper threads of the task now running (browser checks): their tokens count too
 
     def agents(self) -> list[CodexAgent]:
         raise NotImplementedError
+
+    def all_agents(self) -> list[CodexAgent]:
+        """The mode's agents and the helpers the running task started, for its token totals."""
+        return [*self.agents(), *self.helpers]
 
     def _notice(self, text: str) -> None:
         self.on_event("app", "notice", text)
@@ -297,8 +302,9 @@ class _Mode:
         left = [x for x in left if x is not None]
         return min(left) if left else None
 
-    def _ask(self, agent: CodexAgent, task: str, attachments, profile: str) -> str:
+    def _ask(self, agent: CodexAgent, task: str, attachments, profile: str, step: str = "answer") -> str:
         """A chat or maths message: one agent answers it, with that profile's guidance and effort."""
+        agent.step = step
         return agent.send(with_attachments(self.sdk, profiles.wrap(profile, task), attachments),
                           effort=profiles.effort_for(profile, agent.effort))
 
@@ -317,9 +323,10 @@ class SingleMode(_Mode):
         return [self.agent]
 
     def run(self, task: str, attachments=(), profile: str = "coding") -> str:
-        return self._ask(self.agent, task, attachments, profile)
+        return self._ask(self.agent, task, attachments, profile, "answer" if profile in ("chat", "maths") else "task")
 
     def run_goal(self, objective: str, token_budget=None) -> str:
+        self.agent.step = "goal"
         return self.agent.run_goal(objective, token_budget)
 
     def set_permission(self, permission: str) -> None:
@@ -407,6 +414,7 @@ class DualMode(_Mode):
 
     def review(self, message: str) -> tuple:
         """Ask the planner for its verdict. (verdict or None, the review as text)."""
+        self.planner.step = "review"
         if self.settings.structured_verdicts:
             try:
                 raw = self.planner.send(message + "\n\nGive your verdict in the JSON form your output schema asks for.",
@@ -432,6 +440,7 @@ class DualMode(_Mode):
         for round_number in range(self.max_review_rounds + 1):
             if round_number:
                 self._notice(f"{fix_worker.name.capitalize()} is fixing what the planner found (round {round_number}).")
+                fix_worker.step = "fix"
                 report = fix_worker.send(f"THE PLANNER REVIEWED THE WORK AND ASKS FOR CHANGES:\n{review}\n\n"
                                          "Make these fixes.")
                 diff_text = changes_for_review(fix_worker.last_diff)
@@ -464,6 +473,8 @@ class DualMode(_Mode):
         own = not s.check_url
         self._notice("Browser check: a checker opens the changed pages in a headless browser before the verdict.")
         checker = make_checker(self.codex, self.sdk, self.root, s, s.worker_model, on_event=self.on_event)
+        checker.step = "browser check"
+        self.helpers.append(checker)
         try:
             with (webcheck.StaticServer(self.root) if own else nullcontext()) as server:
                 base = server.url if own else s.check_url
@@ -491,11 +502,13 @@ class DualMode(_Mode):
             return self._ask(self.planner, f"QUESTION (answer it yourself; no plan is needed):\n{task}",
                              attachments, profile)
         self._notice("Planner is reading the code and writing a plan.")
+        self.planner.step = "plan"
         plan = self.planner.send(with_attachments(self.sdk, f"TASK:\n{task}", attachments))
         if _NO_PLAN.search(plan):
             return plan  # a question: the planner answered it, nothing to build
 
         self._notice("Worker is carrying out the plan.")
+        self.worker.step = "work"
         # The worker sees the user's images and files with its instructions too.
         report = self.worker.send(with_attachments(
             self.sdk, f"TASK:\n{task}\n\nPLAN FROM THE PLANNER:\n{plan}\n\nCarry out the plan.", attachments))
@@ -503,6 +516,7 @@ class DualMode(_Mode):
 
     def run_goal(self, objective: str, token_budget=None) -> str:
         worker = self.workers()[0]
+        worker.step = "goal"
         self._notice(f"{worker.name.capitalize()} is working on the goal on its own; the planner checks it at the end.")
         report = worker.run_goal(objective, token_budget)
         self._notice("Planner is checking the work.")
@@ -641,6 +655,7 @@ class TeamMode(DualMode):
         self._notice(f"Planner is reading the code and splitting the task for up to {self.team_size} workers.")
         message = (f"TASK:\n{task}\n\nSplit it into at most {self.team_size} independent parts, in the JSON form "
                    "your output schema asks for.")
+        self.planner.step = "plan"
         try:
             raw = self.planner.send(with_attachments(self.sdk, message, attachments), output_schema=TEAM_PLAN_SCHEMA)
         except self.sdk.CodexError as e:
@@ -734,6 +749,7 @@ class TeamMode(DualMode):
         def work(b: int, bucket: list) -> None:
             worker, tree = self._worker(b), (trees[b] if trees else None)
             before = tree.base if tree else None
+            worker.step = "work"
             for n, i in enumerate(bucket):
                 part = parts[i]
                 where = (WORKTREE_NOTE if tree else

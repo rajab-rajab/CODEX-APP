@@ -629,12 +629,23 @@ py main.py --project "C:\path\to\project" --json "fix the failing test"
 {"ok": true, "answer": "...", "error": null, "mode": "single", "project": "...",
  "files_changed": [{"path": "tests/test_app.py", "change": "modified"}],
  "tokens": {"gpt-6.2-sol": {"input": 44337, "cached": 22100, "output": 87}},
- "cost_usd": 0.0412, "seconds": 18.9, "app_version": "..."}
+ "cost_usd": 0.0412, "seconds": 18.9, "app_version": "...",
+ "steps": [{"agent": "codex", "step": "task", "model": "gpt-6.2-sol", "input": 44337, "cached": 22100,
+            "output": 87, "reasoning": 40, "tool_calls": 6, "seconds": 18.2, "cost_usd": 0.0412}],
+ "agents": {"codex": {"model": "gpt-6.2-sol", "turns": 1, "input": 44337, "cached": 22100, "output": 87,
+                      "reasoning": 40, "tool_calls": 6, "seconds": 18.2}}}
 ```
 
 The exit code is 0 when the task succeeded and 1 when it didn't. `files_changed` comes from the
 undo snapshot in a git project, and from Codex's diffs without git. `cost_usd` is `null` until the
 model has a price (`/prices`). `--goal` works with `--json` too.
+
+`steps` lists every turn of the task in the order they ended, with what it used: `task` in single mode;
+`plan`, `work`, `review` and `fix` in dual and team mode (each team worker's part is a `work` step);
+`browser check` for the browser check; `answer` for a chat message; `goal` for `/goal`. `tool_calls`
+counts the commands, file changes and other tools Codex used in that turn. `agents` sums the steps of
+each agent (planner, worker, worker-2, ...). `input` counts all input, cached or not: the input that
+isn't cached (`input` minus `cached`) is what costs the most.
 
 `/export` saves the current conversation as a Markdown file: your messages, Codex's answers, every
 command with the end of its output, and every file change with its diff. Without a file name it goes to
@@ -774,6 +785,10 @@ py bench/run.py --modes single,dual --repeat 3 --tasks median-bug,two-fixes
   `.json`, which git ignores. They are saved again after every run, so a benchmark that is stopped
   (Ctrl+C, or the process ended) keeps every run it finished. Its report then starts with
   "Partial: N of M planned runs", and the JSON has `"complete": false`.
+- **Where the tokens went.** The report has a table per mode and step (plan, work, review, fix, ...):
+  the average turns, tool calls, tokens, share of the mode's tokens, uncached input, output and time per
+  run. It shows what dual and team mode spend their extra tokens on. Each run in the JSON keeps its
+  `by_step` and `agents` totals.
 - **Costs.** Runs are billed like any task: 18 runs for all six tasks in all three modes. Memory, the
   browser check, the update check and the finish signal are off, and app data goes to a temporary folder,
   so your notes and `/stats` stay as they were. `--power high` runs every mode at a higher power level, and
