@@ -2,7 +2,7 @@
 
 What changed in each version of Codex App. `/update` shows the new entries before it updates.
 
-## Unreleased
+## 1.21.0 (2026-11-26)
 
 - **The review has a fresh, small conversation of its own** in dual and team mode: the task, the plan,
   the worker's report, the diff and the test results, on the planner's model (`CODEX_APP_REVIEW_MODEL`
